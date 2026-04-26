@@ -35,7 +35,7 @@ const SECTIONS: SettingsSection[] = [
     title: 'Risk Management',
     icon: Shield,
     fields: [
-      { key: 'leverage', label: 'Leverage', description: 'Cross margin leverage (strategy default: 86x)', type: 'number', min: 1, max: 125, unit: 'x' },
+      { key: 'leverage', label: 'Leverage', description: 'Cross margin leverage (Bitunix max for BTC: 75x)', type: 'number', min: 1, max: 75, unit: 'x' },
       { key: 'position_size_pct', label: 'Position Size', description: 'Percentage of account balance per trade', type: 'number', step: 0.01, min: 0.05, max: 0.60, unit: '% (0.30 = 30%)' },
       { key: 'liquidation_buffer_usd', label: 'Liquidation Buffer', description: 'Minimum distance from entry to liquidation in USD', type: 'number', min: 500, max: 10000, unit: 'USD' },
       { key: 'max_concurrent_positions', label: 'Max Concurrent Positions', description: 'Maximum number of open positions at once', type: 'number', min: 1, max: 5 },

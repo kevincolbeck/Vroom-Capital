@@ -16,6 +16,7 @@ from backend.strategy.time_filter import check_time_filter, get_time_context
 from backend.strategy.velocity import check_velocity_filter, compute_velocity
 from backend.strategy.funding_rate import FundingRateMonitor
 from backend.strategy.macro_calendar import MacroCalendar
+from backend.strategy.liquidation_monitor import LiquidationMonitor
 from backend.config import settings
 
 
@@ -40,6 +41,7 @@ class TradeSignal:
         self.funding_analysis: Dict = {}
         self.macro_context: Dict = {}
         self.time_context: Dict = {}
+        self.liquidation_analysis: Dict = {}
         self.current_price: float = 0.0
 
         self.generated_at: datetime = datetime.utcnow()
@@ -63,6 +65,7 @@ class TradeSignal:
             "funding": self.funding_analysis,
             "macro": self.macro_context,
             "time": self.time_context,
+            "liquidation": self.liquidation_analysis,
             "current_price": self.current_price,
             "generated_at": self.generated_at.isoformat(),
         }
@@ -80,6 +83,7 @@ class SignalEngine:
         )
         self.funding_monitor = FundingRateMonitor()
         self.macro_calendar = MacroCalendar()
+        self.liquidation_monitor = LiquidationMonitor()
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
 
@@ -215,10 +219,28 @@ class SignalEngine:
         signal.macro_context = macro_context
 
         if not macro_context["should_trade"]:
-            signal.block_reasons.append(f"Macro block: {macro_context['fomc_description']}")
+            signal.block_reasons.append(f"Macro block: {macro_context.get('block_description', macro_context['fomc_description'])}")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             return signal
+
+        # ─── Step 8.5: Liquidation positioning analysis ───────────────────
+        try:
+            liq_data = await self.liquidation_monitor.fetch_all(current_price)
+            liq_score_delta, liq_desc = self.liquidation_monitor.get_trade_context(
+                candidate_direction, current_price, liq_data
+            )
+            signal.liquidation_analysis = {
+                **liq_data,
+                "trade_context": liq_desc,
+                "score_delta": liq_score_delta,
+            }
+            if liq_score_delta > 0:
+                signal.warnings.append(f"Positioning edge: {liq_desc}")
+        except Exception as e:
+            logger.warning(f"Liquidation analysis failed: {e}")
+            liq_data = {}
+            liq_score_delta = 0.0
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
         score = 50.0  # Base
@@ -245,6 +267,9 @@ class SignalEngine:
         # Time window bonus (active session = better)
         if time_context.get("risk_level") == "LOW":
             score += 5.0
+
+        # Liquidation positioning bonus/penalty
+        score += liq_score_delta
 
         score = min(100.0, max(0.0, score))
         signal.confidence_score = score

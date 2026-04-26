@@ -82,12 +82,13 @@ export default function BotControl() {
   const isStopped = bot.status === 'STOPPED'
   const isError = bot.status === 'ERROR'
 
-  const statusConfig = {
+  const statusConfigs: Record<string, { color: string; bg: string; dot: string }> = {
     RUNNING: { color: 'text-profit', bg: 'bg-profit/10 border-profit/20', dot: 'bg-profit animate-pulse' },
     STOPPED: { color: 'text-gray-400', bg: 'bg-dark-700 border-dark-500', dot: 'bg-gray-500' },
     PAUSED: { color: 'text-warning', bg: 'bg-warning/10 border-warning/20', dot: 'bg-warning animate-pulse' },
     ERROR: { color: 'text-loss', bg: 'bg-loss/10 border-loss/20', dot: 'bg-loss animate-pulse' },
-  }[bot.status || 'STOPPED'] || { color: 'text-gray-400', bg: 'bg-dark-700 border-dark-500', dot: 'bg-gray-500' }
+  }
+  const statusConfig = statusConfigs[bot.status || 'STOPPED'] || { color: 'text-gray-400', bg: 'bg-dark-700 border-dark-500', dot: 'bg-gray-500' }
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">

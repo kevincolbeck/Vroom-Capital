@@ -1,6 +1,6 @@
 """
 Backtesting Engine
-Simulates the full Legion Bot strategy over historical data tick-by-tick.
+Simulates the full Vroom Capital strategy over historical data tick-by-tick.
 Uses 1H candles as the simulation clock, with 6H candles for trend.
 """
 import asyncio
@@ -31,9 +31,9 @@ class BacktestConfig:
     start_year: int = 2020
     end_year: int = 2025
     initial_capital: float = 1000.0
-    leverage: int = 86
+    leverage: int = 75
     position_size_pct: float = 0.30
-    liquidation_buffer_usd: float = 4000.0
+    liquidation_buffer_usd: float = 4500.0
     tp1_pct: float = 0.20
     tp2_pct: float = 0.30
     velocity_threshold_pct: float = 1.5

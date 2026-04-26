@@ -46,7 +46,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </div>
         {!collapsed && (
           <div>
-            <div className="text-sm font-bold text-white">LEGION BOT</div>
+            <div className="text-sm font-bold text-white">VROOM CAPITAL</div>
             <div className="text-xs text-brand-light">BTC Futures</div>
           </div>
         )}

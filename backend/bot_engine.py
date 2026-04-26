@@ -177,7 +177,7 @@ class BotEngine:
                         except Exception:
                             account_balance = 0
 
-                        if account_balance >= 10:
+                        if account_balance >= 5:
                             new_position = await pos_manager.open_position(
                                 direction=signal.direction,
                                 current_price=current_price,

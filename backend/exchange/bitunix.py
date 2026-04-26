@@ -30,8 +30,9 @@ class BitunixClient:
         return self._client
 
     def _build_signed_headers(self, query_str: str = "", body: str = "") -> Dict[str, str]:
+        import uuid
         timestamp = str(int(time.time() * 1000))
-        nonce = str(int(time.time() * 1000) + 1)
+        nonce = uuid.uuid4().hex  # random 32-char string as required by Bitunix docs
         # Bitunix double-SHA256:
         # step1 = SHA256(nonce + timestamp + apiKey + queryString + body)
         # sign  = SHA256(step1 + secretKey)
@@ -57,9 +58,9 @@ class BitunixClient:
             raise
 
     async def _get_signed(self, path: str, params: Dict) -> Dict:
-        import json
         client = await self._get_client()
-        query_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        # Bitunix: sort keys ascending ASCII, concatenate as key1value1key2value2 (no = or &)
+        query_str = "".join(f"{k}{v}" for k, v in sorted(params.items()))
         headers = self._build_signed_headers(query_str=query_str)
         try:
             resp = await client.get(path, params=params, headers=headers)
@@ -267,7 +268,7 @@ class BitunixClient:
             return []
         path = "/api/v1/futures/position/get_pending_positions"
         try:
-            data = await self._post_signed(path, {"symbol": self.symbol})
+            data = await self._get_signed(path, {"symbol": self.symbol})
             if isinstance(data, dict) and "data" in data:
                 return data["data"] or []
             return []
@@ -335,14 +336,19 @@ class BitunixClient:
     async def set_leverage(self, leverage: int) -> Dict:
         if not self.api_key:
             return {}
-        path = "/api/v1/futures/account/set_leverage"
+        path = "/api/v1/futures/account/change_leverage"
         body = {
             "symbol": self.symbol,
-            "leverage": str(leverage),
-            "marginMode": "CROSSED",
+            "marginCoin": "USDT",
+            "leverage": leverage,
         }
         try:
-            return await self._post_signed(path, body)
+            result = await self._post_signed(path, body)
+            if result.get("code") == 0:
+                logger.info(f"Leverage set to {leverage}x")
+            else:
+                logger.warning(f"Set leverage returned: {result}")
+            return result
         except Exception as e:
             logger.warning(f"Set leverage failed (non-critical): {e}")
             return {}

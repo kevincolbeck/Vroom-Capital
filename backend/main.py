@@ -1,5 +1,5 @@
 """
-Legion Bot — FastAPI Application Entry Point
+Vroom Capital — FastAPI Application Entry Point
 """
 import asyncio
 from contextlib import asynccontextmanager
@@ -19,7 +19,7 @@ from backend.config import settings
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
-    logger.info("Starting Legion Bot API...")
+    logger.info("Starting Vroom Capital API...")
     await init_db()
     logger.info("Database initialized")
 
@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("Shutting down Legion Bot API...")
+    logger.info("Shutting down Vroom Capital API...")
     from backend.bot_engine import get_bot_engine
     engine = get_bot_engine()
     if engine.is_running:
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Legion Bot API",
+    title="Vroom Capital API",
     description="Autonomous Bitcoin Futures Trading Bot with Copy Trading",
     version="1.0.0",
     lifespan=lifespan,

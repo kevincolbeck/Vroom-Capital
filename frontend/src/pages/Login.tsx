@@ -37,7 +37,7 @@ export default function Login() {
             <Zap size={32} className="text-white" />
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold text-white">Legion Bot</h1>
+            <h1 className="text-2xl font-bold text-white">Vroom Capital</h1>
             <p className="text-sm text-gray-500 mt-1">BTC Futures Trading System</p>
           </div>
         </div>
@@ -77,7 +77,7 @@ export default function Login() {
         </div>
 
         <p className="text-center text-xs text-gray-600 mt-6">
-          Legion Bot v1.0 · 86X BTC Futures · 24/7 Autonomous
+          Vroom Capital · 86X BTC Futures · 24/7 Autonomous
         </p>
       </div>
     </div>

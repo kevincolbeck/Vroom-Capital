@@ -22,7 +22,7 @@ echo ""
 echo "[1/8] Installing system packages..."
 apt-get update -qq
 apt-get install -y -qq \
-    python3.11 python3.11-venv python3-pip \
+    python3 python3-venv python3-pip \
     nginx certbot python3-certbot-nginx \
     git curl wget ufw fail2ban \
     build-essential libssl-dev
@@ -33,7 +33,7 @@ if ! command -v node &>/dev/null; then
     apt-get install -y nodejs
 fi
 
-echo "  Python: $(python3.11 --version)"
+echo "  Python: $(python3 --version)"
 echo "  Node:   $(node --version)"
 echo "  npm:    $(npm --version)"
 
@@ -66,7 +66,7 @@ chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 # ── 4. Python virtual environment ────────────────────────
 echo "[4/8] Setting up Python environment..."
 cd "$APP_DIR"
-sudo -u "$APP_USER" python3.11 -m venv venv
+sudo -u "$APP_USER" python3 -m venv venv
 sudo -u "$APP_USER" venv/bin/pip install --upgrade pip -q
 sudo -u "$APP_USER" venv/bin/pip install -r requirements.txt -q
 echo "  Python deps installed"

@@ -20,12 +20,13 @@ export default function Header({ wsData }: HeaderProps) {
   const fundingRate = wsData?.market?.funding_rate || statusData?.market?.funding_rate || 0
   const isConnected = !!wsData
 
-  const statusConfig = {
+  const statusConfigs: Record<string, { color: string; dot: string; label: string }> = {
     RUNNING: { color: 'text-profit', dot: 'bg-profit', label: 'RUNNING' },
     STOPPED: { color: 'text-gray-400', dot: 'bg-gray-500', label: 'STOPPED' },
     PAUSED: { color: 'text-warning', dot: 'bg-warning', label: 'PAUSED' },
     ERROR: { color: 'text-loss', dot: 'bg-loss', label: 'ERROR' },
-  }[botStatus] || { color: 'text-gray-400', dot: 'bg-gray-500', label: botStatus }
+  }
+  const statusConfig = statusConfigs[botStatus] || { color: 'text-gray-400', dot: 'bg-gray-500', label: botStatus }
 
   return (
     <header className="flex items-center justify-between px-6 py-3 bg-dark-800 border-b border-dark-600 shrink-0">

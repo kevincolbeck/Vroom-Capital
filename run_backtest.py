@@ -15,7 +15,7 @@ if sys.platform == "win32":
 # Patch settings so we don't need pydantic_settings installed
 import types
 mock_settings = types.SimpleNamespace(
-    leverage=86,
+    leverage=75,
     position_size_pct=0.30,
     liquidation_buffer_usd=4500.0,
     tp1_pct=0.20,
@@ -42,15 +42,15 @@ def fmt(n, prefix="$", decimals=2):
 
 async def main():
     print("\n" + "=" * 60)
-    print("  LEGION BOT — 2-YEAR BACKTEST (2023–2024)")
-    print("  Strategy: 86x cross | 30% size | $4,500 liq buffer")
+    print("  VROOM CAPITAL — 2-YEAR BACKTEST (2023–2024)")
+    print("  Strategy: 75x cross | $4,500 liq buffer")
     print("=" * 60 + "\n")
 
     config = BacktestConfig(
         start_year=2023,
         end_year=2024,
         initial_capital=10000.0,
-        leverage=86,
+        leverage=75,
         position_size_pct=0.30,
         liquidation_buffer_usd=4500.0,
         tp1_pct=0.20,

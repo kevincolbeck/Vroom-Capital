@@ -20,7 +20,7 @@ export default function Logs() {
   const [level, setLevel] = useState('ALL')
   const [category, setCategory] = useState('ALL')
   const [autoRefresh, setAutoRefresh] = useState(true)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const bottomRef = useRef<HTMLTableRowElement>(null)
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['logs', level, category],

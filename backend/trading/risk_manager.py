@@ -41,51 +41,40 @@ class RiskManager:
             }
         """
         lev = leverage_override or self.leverage
-        size_pct = size_pct_override or self.position_size_pct
-        size_pct = size_pct * size_modifier
+        MAINT_RATE = 0.005
+        MAX_NOTIONAL = 5_000_000.0
 
-        # Cap position size
-        size_pct = min(size_pct, 0.50)
-        size_pct = max(size_pct, 0.05)
+        # Size FROM the buffer: position is sized so liq is always $buffer away from entry
+        target_buf = self.liquidation_buffer_usd * size_modifier
+        quantity_btc = account_balance * size_modifier / (target_buf + current_price * MAINT_RATE)
+        position_size_usd = quantity_btc * current_price
+        if position_size_usd > MAX_NOTIONAL:
+            position_size_usd = MAX_NOTIONAL
+            quantity_btc = position_size_usd / current_price
+        margin_usd = position_size_usd / lev
 
-        margin_usd = account_balance * size_pct
-        position_size_usd = margin_usd * lev
-        quantity_btc = position_size_usd / current_price
-
-        # Calculate liquidation price
-        # Cross margin: liquidation when (margin + unrealized PnL) = maintenance margin
-        # Simplified: maintenance margin ≈ 0.5% of notional
-        maintenance_margin_rate = 0.005
-        maintenance_margin = position_size_usd * maintenance_margin_rate
-
+        # Liquidation price: exactly target_buf away from entry by construction
         if direction == "LONG":
-            # Liq price = entry - (margin - maintenance_margin) / qty_btc
-            liquidation_price = current_price - (margin_usd - maintenance_margin) / quantity_btc
-            tp1_price = current_price * (1 + settings.tp1_pct / lev)
-            tp2_price = current_price * (1 + settings.tp2_pct / lev)
+            liquidation_price = current_price - target_buf
+            tp1_price = current_price + self.liquidation_buffer_usd * settings.tp1_pct
+            tp2_price = current_price + self.liquidation_buffer_usd * settings.tp2_pct
         else:
-            liquidation_price = current_price + (margin_usd - maintenance_margin) / quantity_btc
-            tp1_price = current_price * (1 - settings.tp1_pct / lev)
-            tp2_price = current_price * (1 - settings.tp2_pct / lev)
+            liquidation_price = current_price + target_buf
+            tp1_price = current_price - self.liquidation_buffer_usd * settings.tp1_pct
+            tp2_price = current_price - self.liquidation_buffer_usd * settings.tp2_pct
 
-        liquidation_buffer = abs(current_price - liquidation_price)
+        liquidation_buffer = target_buf
 
-        # Validate the liquidation buffer
+        # Validate
         is_valid = True
         validation_message = "Position valid"
 
-        if liquidation_buffer < self.liquidation_buffer_usd:
+        if quantity_btc < 0.001:
             is_valid = False
-            validation_message = (
-                f"Liquidation buffer too small: ${liquidation_buffer:.0f} < ${self.liquidation_buffer_usd:.0f} required. "
-                f"Reduce position size or leverage."
-            )
-        elif margin_usd > account_balance * 0.60:
+            validation_message = f"Position too small: {quantity_btc:.6f} BTC < 0.001 BTC minimum order size"
+        elif margin_usd > account_balance:
             is_valid = False
-            validation_message = f"Margin too large: ${margin_usd:.0f} > 60% of balance"
-        elif margin_usd < 10:
-            is_valid = False
-            validation_message = f"Margin too small: ${margin_usd:.2f} — minimum $10"
+            validation_message = f"Margin ${margin_usd:.2f} exceeds balance ${account_balance:.2f}"
 
         return {
             "margin_usd": round(margin_usd, 2),

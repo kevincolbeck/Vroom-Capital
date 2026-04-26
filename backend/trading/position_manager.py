@@ -65,7 +65,8 @@ class PositionManager:
             await self._log("ERROR", "ORDER", f"Failed to place {direction} order: {e}")
             return None
 
-        order_id = str(order_result.get("orderId", order_result.get("data", {}).get("orderId", "unknown")))
+        data = order_result.get("data") or {}
+        order_id = str(order_result.get("orderId") or data.get("orderId") or data.get("orderID") or "unknown")
 
         # Create DB record
         position = Position(
