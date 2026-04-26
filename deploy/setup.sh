@@ -6,7 +6,7 @@
 
 set -e
 
-REPO_URL=""          # e.g. https://github.com/youruser/aiagent.git  -- fill this in
+REPO_URL="https://github.com/kevincolbeck/Vroom-Capital.git"
 APP_DIR="/home/legion/aiagent"
 APP_USER="legion"
 DOMAIN=""            # optional: your domain name e.g. bot.yourdomain.com
