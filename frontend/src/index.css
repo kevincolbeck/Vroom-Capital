@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-dark-600;
+  }
+  body {
+    @apply bg-dark-900 text-gray-100 font-sans antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+  ::-webkit-scrollbar {
+    @apply w-1.5 h-1.5;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-dark-800;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-500 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-brand;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-dark-800 border border-dark-600 rounded-xl p-4;
+  }
+  .card-header {
+    @apply flex items-center justify-between mb-4;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-brand hover:bg-brand-dark text-white shadow-lg shadow-brand/20;
+  }
+  .btn-success {
+    @apply btn bg-profit hover:bg-emerald-600 text-white shadow-lg shadow-profit/20;
+  }
+  .btn-danger {
+    @apply btn bg-loss hover:bg-red-600 text-white shadow-lg shadow-loss/20;
+  }
+  .btn-warning {
+    @apply btn bg-warning hover:bg-amber-600 text-black;
+  }
+  .btn-ghost {
+    @apply btn bg-dark-600 hover:bg-dark-500 text-gray-300;
+  }
+  .btn-outline {
+    @apply btn border border-dark-500 hover:bg-dark-700 text-gray-300;
+  }
+  .input {
+    @apply w-full bg-dark-700 border border-dark-500 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand transition-colors;
+  }
+  .label {
+    @apply block text-xs font-medium text-gray-400 mb-1;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+  .badge-green {
+    @apply badge bg-profit/10 text-profit border border-profit/20;
+  }
+  .badge-red {
+    @apply badge bg-loss/10 text-loss border border-loss/20;
+  }
+  .badge-yellow {
+    @apply badge bg-warning/10 text-warning border border-warning/20;
+  }
+  .badge-purple {
+    @apply badge bg-brand/10 text-brand border border-brand/20;
+  }
+  .badge-gray {
+    @apply badge bg-dark-600 text-gray-400 border border-dark-500;
+  }
+  .metric-card {
+    @apply card flex flex-col gap-1;
+  }
+  .metric-label {
+    @apply text-xs text-gray-500 uppercase tracking-wide;
+  }
+  .metric-value {
+    @apply text-2xl font-bold font-mono;
+  }
+  .metric-sub {
+    @apply text-xs text-gray-500;
+  }
+  .table-header {
+    @apply text-xs font-medium text-gray-500 uppercase tracking-wide px-4 py-2;
+  }
+  .table-cell {
+    @apply px-4 py-3 text-sm;
+  }
+  .table-row {
+    @apply border-b border-dark-700 hover:bg-dark-700/50 transition-colors;
+  }
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 text-gray-400 hover:text-white hover:bg-dark-700;
+  }
+  .sidebar-link-active {
+    @apply sidebar-link text-white bg-brand/10 border border-brand/20 text-brand-light;
+  }
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+  .glow-green {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+  }
+  .glow-red {
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+  }
+  .glow-brand {
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
+  }
+}
+
+@layer utilities {
+  .text-profit {
+    @apply text-emerald-400;
+  }
+  .text-loss {
+    @apply text-red-400;
+  }
+  .font-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  .glass {
+    backdrop-filter: blur(12px);
+    background: rgba(15, 15, 26, 0.8);
+  }
+}

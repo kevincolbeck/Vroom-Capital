@@ -1,0 +1,35 @@
+# Environment — never commit secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Data & cache — too large for git
+data/
+data_cache/
+logs/
+
+# Frontend build output
+frontend/dist/
+frontend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Windows reserved device name (git index artifact)
+NUL
+
+# Claude Code local settings
+.claude/
+
+# Screenshots / local images
+*.jpg
+*.jpeg
+*.png
+*.gif

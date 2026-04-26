@@ -1,0 +1,43 @@
+[Unit]
+Description=Legion Bot — Autonomous BTC Futures Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=legion
+Group=legion
+WorkingDirectory=/home/legion/aiagent
+
+# Load API keys and config from .env file
+EnvironmentFile=/home/legion/aiagent/.env
+
+# Run FastAPI + bot engine
+ExecStart=/home/legion/aiagent/venv/bin/uvicorn backend.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    --loop asyncio \
+    --log-level info
+
+# Restart automatically if it crashes
+Restart=always
+RestartSec=10
+StartLimitInterval=120
+StartLimitBurst=5
+
+# Logging — view with: journalctl -u legion-bot -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=legion-bot
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/legion/aiagent/data
+ReadWritePaths=/home/legion/aiagent/data_cache
+ReadWritePaths=/home/legion/aiagent/logs
+
+[Install]
+WantedBy=multi-user.target

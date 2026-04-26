@@ -1,0 +1,423 @@
+import { useQuery } from '@tanstack/react-query'
+import { botApi, positionApi, marketApi } from '../lib/api'
+import { formatPrice, formatPct, formatUsd, formatDate, timeAgo } from '../lib/utils'
+import {
+  TrendingUp, TrendingDown, Activity, DollarSign, Target, AlertTriangle,
+  Clock, Zap, ArrowUpRight, ArrowDownRight, BarChart2, Shield
+} from 'lucide-react'
+import { clsx } from 'clsx'
+
+function MetricCard({ label, value, sub, color = 'white', icon: Icon }: any) {
+  return (
+    <div className="card flex items-start gap-3">
+      {Icon && (
+        <div className="w-9 h-9 rounded-lg bg-dark-600 flex items-center justify-center shrink-0 mt-0.5">
+          <Icon size={18} className="text-gray-400" />
+        </div>
+      )}
+      <div className="min-w-0">
+        <div className="text-xs text-gray-500 uppercase tracking-wide">{label}</div>
+        <div className={clsx('text-xl font-bold font-mono mt-0.5', color)}>{value}</div>
+        {sub && <div className="text-xs text-gray-500 mt-0.5">{sub}</div>}
+      </div>
+    </div>
+  )
+}
+
+function SignalIndicator({ signal }: { signal: any }) {
+  if (!signal) return null
+  const dir = signal.direction
+  const strength = signal.strength
+  const blocked = signal.block_reasons?.length > 0
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+          <Target size={16} className="text-brand" />
+          Current Signal
+        </h3>
+        <span className={clsx('badge',
+          blocked ? 'badge-gray' : dir === 'LONG' ? 'badge-green' : 'badge-red'
+        )}>
+          {blocked ? 'BLOCKED' : dir || 'NEUTRAL'}
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {/* HA Trend */}
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">6H Trend</span>
+          <span className={clsx('font-mono font-medium',
+            signal.ha_6h_color === 'GREEN' ? 'text-profit' : 'text-loss'
+          )}>
+            {signal.ha_6h_color || '—'} ▲
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">1H Trend</span>
+          <span className={clsx('font-mono font-medium',
+            signal.ha_1h_color === 'GREEN' ? 'text-profit' : 'text-loss'
+          )}>
+            {signal.ha_1h_color || '—'} ▲
+          </span>
+        </div>
+
+        {/* Zone */}
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">Zone</span>
+          <span className="font-mono text-gray-300">{signal.zone_key || '—'} ({signal.zone_position || '—'})</span>
+        </div>
+
+        {/* Velocity */}
+        {signal.velocity && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">2H Velocity</span>
+            <span className={clsx('font-mono',
+              (signal.velocity.pct_change || 0) > 0 ? 'text-profit' : 'text-loss'
+            )}>
+              {signal.velocity.pct_change != null ? formatPct(signal.velocity.pct_change) : '—'}
+            </span>
+          </div>
+        )}
+
+        {/* Confidence */}
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">Confidence</span>
+          <div className="flex items-center gap-2">
+            <div className="w-20 h-1.5 bg-dark-600 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-brand rounded-full transition-all"
+                style={{ width: `${signal.confidence_score || 0}%` }}
+              />
+            </div>
+            <span className="font-mono text-gray-300">{signal.confidence_score?.toFixed(0) || 0}%</span>
+          </div>
+        </div>
+
+        {/* Block reasons */}
+        {signal.block_reasons?.length > 0 && (
+          <div className="mt-2 p-2 bg-dark-700 rounded-lg">
+            {signal.block_reasons.slice(0, 2).map((r: string, i: number) => (
+              <div key={i} className="text-xs text-gray-500 flex items-start gap-1">
+                <AlertTriangle size={10} className="text-warning shrink-0 mt-0.5" />
+                <span>{r}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PositionCard({ position }: { position: any }) {
+  const isLong = position.side === 'LONG'
+  const pnl = position.unrealized_pnl_pct || 0
+  const pnlColor = pnl > 0 ? 'text-profit' : 'text-loss'
+
+  return (
+    <div className={clsx('p-4 rounded-xl border-2 transition-all',
+      isLong
+        ? 'border-profit/30 bg-profit/5'
+        : 'border-loss/30 bg-loss/5'
+    )}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          {isLong
+            ? <ArrowUpRight size={18} className="text-profit" />
+            : <ArrowDownRight size={18} className="text-loss" />
+          }
+          <span className={clsx('font-bold text-sm', isLong ? 'text-profit' : 'text-loss')}>
+            {position.side} {position.leverage}x
+          </span>
+        </div>
+        <span className={clsx('text-lg font-bold font-mono', pnlColor)}>
+          {formatPct(pnl)}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <div className="text-gray-500">Entry</div>
+          <div className="font-mono text-white">{formatPrice(position.entry_price)}</div>
+        </div>
+        <div>
+          <div className="text-gray-500">Current</div>
+          <div className="font-mono text-white">{formatPrice(position.current_price)}</div>
+        </div>
+        <div>
+          <div className="text-gray-500">Liquidation</div>
+          <div className="font-mono text-loss">{formatPrice(position.liquidation_price)}</div>
+        </div>
+        <div>
+          <div className="text-gray-500">Peak</div>
+          <div className="font-mono text-brand">{formatPct(position.peak_profit_pct)}</div>
+        </div>
+      </div>
+      <div className="mt-2 text-xs text-gray-500">
+        Opened {timeAgo(position.opened_at)} · Zone {position.zone}
+      </div>
+    </div>
+  )
+}
+
+export default function Dashboard() {
+  const { data: statusData, isLoading } = useQuery({
+    queryKey: ['bot-status'],
+    queryFn: () => botApi.getStatus().then(r => r.data),
+    refetchInterval: 5000,
+  })
+
+  const { data: positionsData } = useQuery({
+    queryKey: ['positions-open'],
+    queryFn: () => positionApi.getAll({ status: 'OPEN', limit: 5 }).then(r => r.data),
+    refetchInterval: 5000,
+  })
+
+  const { data: contextData } = useQuery({
+    queryKey: ['market-context'],
+    queryFn: () => marketApi.getContext().then(r => r.data),
+    refetchInterval: 30000,
+  })
+
+  const bot = statusData?.bot || {}
+  const account = statusData?.account || {}
+  const market = statusData?.market || {}
+  const signal = statusData?.last_signal
+  const openPositions = positionsData?.positions || []
+  const timeCtx = contextData?.time || {}
+  const macroCtx = contextData?.macro || {}
+  const fundingCtx = contextData?.funding || {}
+
+  const winRate = bot.win_rate || 0
+  const totalPnl = bot.total_pnl_usd || 0
+
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Real-time overview · BTC/USDT Perpetual</p>
+        </div>
+        <div className="text-xs text-gray-600">
+          Last update: {new Date().toLocaleTimeString()}
+        </div>
+      </div>
+
+      {/* Key Metrics */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <MetricCard
+          label="Account Balance"
+          value={formatPrice(account.balance, 2)}
+          sub={`Available: ${formatPrice(account.available, 2)}`}
+          icon={DollarSign}
+          color="text-white"
+        />
+        <MetricCard
+          label="Total P&L"
+          value={formatUsd(totalPnl)}
+          sub={`${bot.total_trades || 0} trades`}
+          icon={BarChart2}
+          color={totalPnl >= 0 ? 'text-profit' : 'text-loss'}
+        />
+        <MetricCard
+          label="Win Rate"
+          value={`${winRate}%`}
+          sub={`${bot.winning_trades || 0}W / ${(bot.total_trades || 0) - (bot.winning_trades || 0)}L`}
+          icon={Target}
+          color={winRate >= 55 ? 'text-profit' : 'text-warning'}
+        />
+        <MetricCard
+          label="Open Positions"
+          value={openPositions.length}
+          sub={openPositions.length > 0 ? `${openPositions[0]?.side} active` : 'No active positions'}
+          icon={Activity}
+          color={openPositions.length > 0 ? 'text-brand-light' : 'text-gray-400'}
+        />
+      </div>
+
+      {/* Main Content Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        {/* Left: Open Position + Signal */}
+        <div className="space-y-4">
+          {openPositions.length > 0 ? (
+            <div>
+              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                <Activity size={16} className="text-brand animate-pulse" />
+                Active Position
+              </h3>
+              {openPositions.map((p: any) => (
+                <PositionCard key={p.id} position={p} />
+              ))}
+            </div>
+          ) : (
+            <div className="card text-center py-8">
+              <Shield size={32} className="text-gray-600 mx-auto mb-2" />
+              <div className="text-sm text-gray-500">No open positions</div>
+              <div className="text-xs text-gray-600 mt-1">Bot is scanning for signals</div>
+            </div>
+          )}
+
+          <SignalIndicator signal={signal} />
+        </div>
+
+        {/* Center: Market Context */}
+        <div className="space-y-4">
+          {/* Time Context */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Clock size={16} className="text-brand" />
+                Time Filter
+              </h3>
+              <span className={clsx('badge',
+                timeCtx.risk_level === 'EXTREME' ? 'badge-red' :
+                timeCtx.risk_level === 'HIGH' ? 'badge-yellow' :
+                timeCtx.risk_level === 'LOW' ? 'badge-green' : 'badge-gray'
+              )}>
+                {timeCtx.label || 'NEUTRAL'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="text-center p-2 rounded-lg bg-dark-700">
+                <div className="text-gray-500 mb-1">LONG</div>
+                <div className={clsx('font-medium', timeCtx.long_blocked ? 'text-loss' : 'text-profit')}>
+                  {timeCtx.long_blocked ? '⛔ BLOCKED' : '✅ ALLOWED'}
+                </div>
+              </div>
+              <div className="text-center p-2 rounded-lg bg-dark-700">
+                <div className="text-gray-500 mb-1">SHORT</div>
+                <div className={clsx('font-medium', timeCtx.short_blocked ? 'text-loss' : 'text-profit')}>
+                  {timeCtx.short_blocked ? '⛔ BLOCKED' : '✅ ALLOWED'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Macro Context */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <AlertTriangle size={16} className="text-brand" />
+                Macro Calendar
+              </h3>
+              <span className={clsx('badge',
+                macroCtx.fomc_risk_level === 'EXTREME' ? 'badge-red' :
+                macroCtx.fomc_risk_level === 'HIGH' ? 'badge-yellow' :
+                macroCtx.fomc_risk_level === 'MODERATE' ? 'badge-yellow' : 'badge-green'
+              )}>
+                {macroCtx.fomc_risk_level || 'NORMAL'}
+              </span>
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-gray-500">FOMC</span>
+                <span className="text-gray-300">
+                  {macroCtx.days_to_fomc != null ? `${macroCtx.days_to_fomc} days` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Quad Witching</span>
+                <span className={macroCtx.is_quad_witching ? 'text-warning' : 'text-gray-300'}>
+                  {macroCtx.is_quad_witching ? '⚠️ Active' : 'No'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Size Modifier</span>
+                <span className={clsx('font-mono', macroCtx.position_size_modifier < 1 ? 'text-warning' : 'text-profit')}>
+                  {macroCtx.position_size_modifier != null ? `${macroCtx.position_size_modifier}x` : '—'}
+                </span>
+              </div>
+              <p className="text-gray-600 pt-1">{macroCtx.fomc_description}</p>
+            </div>
+          </div>
+
+          {/* Funding Rate */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Zap size={16} className="text-brand" />
+                Funding Rate
+              </h3>
+              <span className={clsx('badge',
+                fundingCtx.overall_sentiment === 'BEARISH_CONTRARIAN' ? 'badge-red' :
+                fundingCtx.overall_sentiment === 'BULLISH_CONTRARIAN' ? 'badge-green' : 'badge-gray'
+              )}>
+                {fundingCtx.signal_strength || 'NEUTRAL'}
+              </span>
+            </div>
+            <div className="space-y-2 text-xs">
+              {Object.entries(fundingCtx.rates || {}).map(([exchange, rate]: any) => (
+                <div key={exchange} className="flex justify-between">
+                  <span className="text-gray-500 capitalize">{exchange}</span>
+                  <span className={clsx('font-mono',
+                    rate > 0.0001 ? 'text-loss' : rate < -0.0001 ? 'text-profit' : 'text-gray-300'
+                  )}>
+                    {rate != null ? `${(rate * 100).toFixed(4)}%` : '—'}
+                  </span>
+                </div>
+              ))}
+              <p className="text-gray-600 pt-1 text-xs">{fundingCtx.description}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Recent Activity */}
+        <div className="card">
+          <div className="card-header">
+            <h3 className="text-sm font-semibold text-white">Performance</h3>
+          </div>
+          <div className="space-y-4">
+            {/* Win rate bar */}
+            <div>
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-gray-500">Win Rate</span>
+                <span className="text-white font-mono">{winRate}%</span>
+              </div>
+              <div className="h-2 bg-dark-600 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-profit to-brand rounded-full transition-all"
+                  style={{ width: `${winRate}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-dark-700 rounded-lg p-3 text-center">
+                <div className="text-xs text-gray-500">Total Trades</div>
+                <div className="text-xl font-bold text-white mt-0.5">{bot.total_trades || 0}</div>
+              </div>
+              <div className="bg-dark-700 rounded-lg p-3 text-center">
+                <div className="text-xs text-gray-500">Total PnL</div>
+                <div className={clsx('text-xl font-bold font-mono mt-0.5',
+                  totalPnl >= 0 ? 'text-profit' : 'text-loss'
+                )}>
+                  {formatUsd(totalPnl)}
+                </div>
+              </div>
+            </div>
+
+            {/* Strategy params */}
+            <div className="border-t border-dark-700 pt-3 space-y-2 text-xs">
+              <div className="text-gray-500 font-medium uppercase tracking-wide mb-2">Strategy</div>
+              {[
+                ['Leverage', '86x Cross'],
+                ['Position Size', '30% of balance'],
+                ['Liq Buffer', '$4,000'],
+                ['TP1 / TP2', '20% / 30%'],
+                ['No Stop Loss', 'Structural protection'],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-gray-500">{k}</span>
+                  <span className="text-gray-300">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
