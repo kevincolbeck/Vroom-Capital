@@ -29,27 +29,20 @@ class BitunixClient:
             )
         return self._client
 
-    def _sign(self, params: str) -> str:
-        return hmac.new(
-            self.api_secret.encode("utf-8"),
-            params.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-
-    def _build_signed_headers(self, body: str = "") -> Dict[str, str]:
+    def _build_signed_headers(self, query_str: str = "", body: str = "") -> Dict[str, str]:
         timestamp = str(int(time.time() * 1000))
-        nonce = str(int(time.time() * 1000))
-        sign_str = self.api_key + timestamp + nonce + body
-        signature = hmac.new(
-            self.api_secret.encode("utf-8"),
-            sign_str.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
+        nonce = str(int(time.time() * 1000) + 1)
+        # Bitunix double-SHA256:
+        # step1 = SHA256(nonce + timestamp + apiKey + queryString + body)
+        # sign  = SHA256(step1 + secretKey)
+        digest_input = nonce + timestamp + self.api_key + query_str + body
+        digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+        sign = hashlib.sha256((digest + self.api_secret).encode("utf-8")).hexdigest()
         return {
             "api-key": self.api_key,
             "timestamp": timestamp,
             "nonce": nonce,
-            "sign": signature,
+            "sign": sign,
             "Content-Type": "application/json",
         }
 
@@ -63,11 +56,24 @@ class BitunixClient:
             logger.error(f"GET {path} failed: {e}")
             raise
 
+    async def _get_signed(self, path: str, params: Dict) -> Dict:
+        import json
+        client = await self._get_client()
+        query_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        headers = self._build_signed_headers(query_str=query_str)
+        try:
+            resp = await client.get(path, params=params, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error(f"GET signed {path} failed: {e}")
+            raise
+
     async def _post_signed(self, path: str, body: Dict) -> Dict:
         import json
         client = await self._get_client()
         body_str = json.dumps(body, separators=(",", ":"))
-        headers = self._build_signed_headers(body_str)
+        headers = self._build_signed_headers(body=body_str)
         try:
             resp = await client.post(path, content=body_str, headers=headers)
             resp.raise_for_status()
@@ -151,37 +157,39 @@ class BitunixClient:
             ]
 
     async def get_ticker(self) -> Dict:
-        """Get current mark price and index price."""
-        path = "/api/v1/futures/market/ticker"
+        """Get current mark price using /tickers endpoint (filter by symbol)."""
+        path = "/api/v1/futures/market/tickers"
         try:
-            data = await self._get(path, {"symbol": self.symbol})
-            if isinstance(data, dict) and "data" in data:
-                ticker = data["data"]
-            else:
-                ticker = data
-            return {
-                "price": float(ticker.get("lastPrice", ticker.get("price", ticker.get("markPrice", 0)))),
-                "mark_price": float(ticker.get("markPrice", ticker.get("lastPrice", 0))),
-                "index_price": float(ticker.get("indexPrice", ticker.get("lastPrice", 0))),
-                "funding_rate": float(ticker.get("fundingRate", 0)),
-            }
+            data = await self._get(path, {})
+            tickers = data.get("data", []) if isinstance(data, dict) else []
+            ticker = next((t for t in tickers if t.get("symbol") == self.symbol), None)
+            if ticker:
+                price = float(ticker.get("markPrice") or ticker.get("lastPrice") or 0)
+                return {
+                    "price": price,
+                    "mark_price": price,
+                    "index_price": price,
+                    "funding_rate": float(ticker.get("fundingRate", 0)),
+                }
+            raise ValueError(f"{self.symbol} not found in tickers")
         except Exception as e:
             logger.warning(f"Failed to get ticker from Bitunix: {e}")
             return await self._get_ticker_fallback()
 
     async def _get_ticker_fallback(self) -> Dict:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                "https://fapi.binance.com/fapi/v1/premiumIndex",
-                params={"symbol": "BTCUSDT"}
-            )
-            d = resp.json()
-            return {
-                "price": float(d.get("markPrice", 0)),
-                "mark_price": float(d.get("markPrice", 0)),
-                "index_price": float(d.get("indexPrice", 0)),
-                "funding_rate": float(d.get("lastFundingRate", 0)),
-            }
+        """Fallback to CryptoCompare (US-accessible, no API key needed)."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://min-api.cryptocompare.com/data/price",
+                    params={"fsym": "BTC", "tsyms": "USD"}
+                )
+                d = resp.json()
+                price = float(d.get("USD", 0))
+                return {"price": price, "mark_price": price, "index_price": price, "funding_rate": 0.0}
+        except Exception as e:
+            logger.warning(f"Ticker fallback also failed: {e}")
+            return {"price": 0.0, "mark_price": 0.0, "index_price": 0.0, "funding_rate": 0.0}
 
     async def get_funding_rate(self) -> float:
         """Get current funding rate."""
@@ -191,24 +199,64 @@ class BitunixClient:
         except Exception:
             return 0.0
 
+    async def get_copy_trading_aum(self) -> float:
+        """
+        Get copy trading portfolio AUM (total assets under management).
+        Uses the lead trader info endpoint which returns totalAssets.
+        Falls back to 0.0 if not available.
+        """
+        if not self.api_key:
+            return 0.0
+        path = "/api/v1/futures/copy_trading/lead_trader/info"
+        try:
+            data = await self._get_signed(path, {})
+            if isinstance(data, dict) and data.get("code") == 0:
+                info = data.get("data") or {}
+                # totalAssets = own equity + follower AUM pooled
+                aum = float(info.get("totalAssets", 0) or info.get("aum", 0) or 0)
+                logger.info(f"Copy trading AUM: ${aum:,.2f}")
+                return aum
+        except Exception as e:
+            logger.warning(f"Could not fetch copy trading AUM: {e}")
+        return 0.0
+
     async def get_account_balance(self) -> Dict:
-        """Get account USDT balance."""
+        """
+        Get effective trading balance.
+        Prefers copy trading AUM (lead account total assets) so position sizing
+        reflects the full portfolio, not just the personal futures sub-account.
+        Falls back to standard futures account balance.
+        """
         if not self.api_key:
             return {"balance": 0.0, "available": 0.0, "unrealized_pnl": 0.0}
-        path = "/api/v1/futures/account/assets"
+
+        # Try copy trading AUM first
+        aum = await self.get_copy_trading_aum()
+
+        path = "/api/v1/futures/account"
         try:
-            data = await self._post_signed(path, {})
-            if isinstance(data, dict) and "data" in data:
-                assets = data["data"]
-                if isinstance(assets, list):
-                    for asset in assets:
-                        if asset.get("currency", asset.get("asset", "")) in ("USDT", "USD"):
-                            return {
-                                "balance": float(asset.get("balance", asset.get("walletBalance", 0))),
-                                "available": float(asset.get("available", asset.get("availableBalance", 0))),
-                                "unrealized_pnl": float(asset.get("unrealizedPnl", 0)),
-                            }
-            return {"balance": 1000.0, "available": 1000.0, "unrealized_pnl": 0.0}
+            data = await self._get_signed(path, {"marginCoin": "USDT"})
+            if isinstance(data, dict) and data.get("code") == 0:
+                accounts = data.get("data", [])
+                if isinstance(accounts, list) and accounts:
+                    acct = accounts[0]
+                else:
+                    acct = accounts if isinstance(accounts, dict) else {}
+                available = float(acct.get("available", 0))
+                margin = float(acct.get("margin", 0))
+                pnl = float(acct.get("crossUnrealizedPNL", 0))
+                personal_balance = available + margin
+                # Use AUM if it's larger (includes follower funds), else personal balance
+                effective_balance = aum if aum > personal_balance else personal_balance
+                if aum > 0:
+                    logger.info(f"Using copy trading AUM ${aum:,.2f} (personal: ${personal_balance:,.2f})")
+                return {
+                    "balance": effective_balance,
+                    "available": available,
+                    "unrealized_pnl": pnl,
+                }
+            logger.warning(f"Balance API returned: {data}")
+            return {"balance": 0.0, "available": 0.0, "unrealized_pnl": 0.0}
         except Exception as e:
             logger.error(f"Failed to get balance: {e}")
             return {"balance": 0.0, "available": 0.0, "unrealized_pnl": 0.0}
@@ -247,11 +295,9 @@ class BitunixClient:
         body = {
             "symbol": self.symbol,
             "side": side,
+            "tradeSide": "OPEN",
             "orderType": order_type,
             "qty": str(quantity),
-            "leverage": str(leverage),
-            "marginMode": "CROSSED",
-            "reduceOnly": False,
         }
         if order_type == "LIMIT" and price:
             body["price"] = str(price)
@@ -274,10 +320,9 @@ class BitunixClient:
         body = {
             "symbol": self.symbol,
             "side": close_side,
+            "tradeSide": "CLOSE",
             "orderType": "MARKET",
             "qty": str(quantity),
-            "marginMode": "CROSSED",
-            "reduceOnly": True,
         }
         try:
             result = await self._post_signed(path, body)
