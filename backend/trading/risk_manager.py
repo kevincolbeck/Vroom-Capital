@@ -52,8 +52,13 @@ class RiskManager:
             margin_usd = position_size_usd / lev
         quantity_btc = position_size_usd / current_price
 
-        # Liquidation price using standard cross-margin formula: entry × (1 ∓ (1/lev - MAINT_RATE))
-        liq_distance = current_price * max(1.0 / lev - MAINT_RATE, 0.001)
+        # Cross-margin liq: entire account equity backs the position.
+        # Max loss before liq = account_balance - maintenance, over qty.
+        # Simplifies to: liq_dist = entry × (account_balance/notional - MAINT_RATE)
+        #              = entry × (1/(size_modifier × position_size_pct × lev) - MAINT_RATE)
+        liq_distance = current_price * max(
+            1.0 / (size_modifier * self.position_size_pct * lev) - MAINT_RATE, 0.001
+        )
         tp1_delta = current_price * settings.tp1_pct / lev
         tp2_delta = current_price * settings.tp2_pct / lev
         if direction == "LONG":

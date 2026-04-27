@@ -16,7 +16,7 @@ from backend.strategy.time_filter import check_time_filter, get_time_context
 from backend.strategy.velocity import check_velocity_filter, compute_velocity
 from backend.strategy.macro_calendar import MacroCalendar, FOMC_DATES
 from backend.backtest.data_loader import (
-    download_klines, download_funding_rates,
+    download_klines, download_funding_rates, download_3m_klines,
     build_6h_from_1h, get_funding_at_time, clear_cache
 )
 from datetime import date
@@ -30,6 +30,9 @@ from datetime import date
 class BacktestConfig:
     start_year: int = 2020
     end_year: int = 2025
+    # Optional custom date range — overrides start_year/end_year if set
+    start_date: object = None  # datetime with tzinfo
+    end_date: object = None    # datetime with tzinfo
     initial_capital: float = 1000.0
     leverage: int = 75
     position_size_pct: float = 0.30
@@ -50,10 +53,14 @@ class BacktestConfig:
     # Funding extremes (block trade)
     funding_extreme_positive: float = 0.001   # 0.1%
     funding_extreme_negative: float = -0.0005  # -0.05%
-    # Trailing stop — must match live config defaults
-    trailing_peak_threshold_pct: float = 25.0   # above this peak, use wide trail
-    trailing_after_tp1_peak_low_pct: float = 1.0  # trail % when peak < 25%
-    trailing_after_tp1_peak_high_pct: float = 5.0  # trail % when peak >= 25%
+    # Trailing stop: 1% trail after TP1, widens to 5% after TP2
+    trailing_peak_threshold_pct: float = 25.0   # unused by simulation — kept for API compat
+    trailing_after_tp1_peak_low_pct: float = 1.0   # trail % before TP2
+    trailing_after_tp1_peak_high_pct: float = 5.0  # trail % after TP2
+    # Realistic execution costs
+    taker_fee_pct: float = 0.0005   # 0.05% per side (Bitunix taker, confirmed from live trade)
+    slippage_pct: float = 0.0001    # 0.01% per side (conservative estimate)
+    charge_funding: bool = True     # deduct funding payments every 8h during hold
 
 
 @dataclass
@@ -76,6 +83,7 @@ class SimTrade:
     realized_pnl_pct: float = 0.0
     realized_pnl_usd: float = 0.0
     peak_profit_pct: float = 0.0
+    max_adverse_pct: float = 0.0  # worst intra-trade leveraged PnL (negative = against us)
     status: str = "OPEN"        # OPEN | CLOSED | LIQUIDATED
 
     # Signal metadata
@@ -161,31 +169,34 @@ class BacktestEngine:
                 progress_cb(pct, msg)
 
         try:
-            # ─── Step 1: Download data ──────────────────────────────
+            # ─── Step 1: Download 1H data ───────────────────────────
             _progress(0.0, "Downloading historical data...")
             from datetime import datetime, timezone
 
-            start_dt = datetime(self.config.start_year, 1, 1, tzinfo=timezone.utc)
-            end_dt = datetime(self.config.end_year + 1, 1, 1, tzinfo=timezone.utc)
+            start_dt = self.config.start_date or datetime(self.config.start_year, 1, 1, tzinfo=timezone.utc)
+            end_dt   = self.config.end_date   or datetime(self.config.end_year + 1, 1, 1, tzinfo=timezone.utc)
 
-            def kline_progress(pct, msg):
-                _progress(pct * 0.30, msg)
-
-            candles_1h = await download_klines("1h", start_dt, end_dt, kline_progress)
-            _progress(0.30, "Building 6H candles...")
+            candles_1h = await download_klines("1h", start_dt, end_dt,
+                lambda pct, msg: _progress(pct * 0.22, msg))
+            _progress(0.22, "Building 6H candles...")
             candles_6h = build_6h_from_1h(candles_1h)
 
-            _progress(0.32, "Downloading funding rates...")
+            _progress(0.24, "Downloading funding rates...")
             funding_rates = await download_funding_rates(start_dt, end_dt,
-                lambda pct, msg: _progress(0.32 + pct * 0.05, msg))
+                lambda pct, msg: _progress(0.24 + pct * 0.04, msg))
 
-            _progress(0.37, f"Loaded {len(candles_1h)} 1H + {len(candles_6h)} 6H candles. Running simulation...")
+            # ─── Step 2: Download 3M data (Binance futures) ─────────
+            _progress(0.28, "Downloading 3M candles (Binance futures)...")
+            candles_3m = await download_3m_klines(start_dt, end_dt,
+                lambda pct, msg: _progress(0.28 + pct * 0.09, msg))
+
+            _progress(0.37, f"Loaded {len(candles_1h)} 1H + {len(candles_6h)} 6H + {len(candles_3m)} 3M candles. Running simulation...")
             result.data_points = len(candles_1h)
             result.start_date = datetime.fromtimestamp(candles_1h[0]["open_time"] / 1000).strftime("%Y-%m-%d")
             result.end_date = datetime.fromtimestamp(candles_1h[-1]["open_time"] / 1000).strftime("%Y-%m-%d")
 
-            # ─── Step 2: Run simulation ─────────────────────────────
-            await self._simulate(candles_1h, candles_6h, funding_rates, result, _progress)
+            # ─── Step 3: Run simulation ─────────────────────────────
+            await self._simulate(candles_1h, candles_6h, candles_3m, funding_rates, result, _progress)
 
         except Exception as e:
             logger.exception(f"Backtest error: {e}")
@@ -200,6 +211,7 @@ class BacktestEngine:
         self,
         candles_1h: List[Dict],
         candles_6h: List[Dict],
+        candles_3m: List[Dict],
         funding_rates: Dict[int, float],
         result: BacktestResult,
         progress_cb: Callable,
@@ -216,11 +228,23 @@ class BacktestEngine:
         # Rolling candle buffers
         buf_1h: Deque[Dict] = deque(maxlen=self.HA_1H_WINDOW + self.VELOCITY_WINDOW)
         buf_6h: Deque[Dict] = deque(maxlen=self.HA_6H_WINDOW)
+        # Index 3M candles by their 1H open_time bucket for fast lookup
+        idx_3m_by_hour: Dict[int, List[Dict]] = {}
+        for c in candles_3m:
+            hour_key = (c["open_time"] // 3_600_000) * 3_600_000
+            if hour_key not in idx_3m_by_hour:
+                idx_3m_by_hour[hour_key] = []
+            idx_3m_by_hour[hour_key].append(c)
 
-        # Index 6H candles by time for fast lookup
+        FUNDING_INTERVAL_MS = 8 * 3_600_000
+        last_funding_period: Optional[int] = None
+
         idx_6h = 0
         n_6h = len(candles_6h)
         n_1h = len(candles_1h)
+
+        MAINT_RATE = 0.005
+        MAX_NOTIONAL = 20_000_000.0
 
         prev_price: Optional[float] = None
         first_breaks: Dict[str, Dict] = {}
@@ -239,21 +263,21 @@ class BacktestEngine:
             day_key = dt.strftime("%Y-%m-%d")
             month_key = dt.strftime("%Y-%m")
 
-            # Progress update every 500 candles
             if i % 500 == 0:
                 pct = 0.37 + (i / n_1h) * 0.60
-                progress_cb(pct, f"Simulating {dt.strftime('%Y-%m')} | Capital: ${capital:.0f} | Trades: {trade_counter}")
-                await asyncio.sleep(0)  # Yield control so progress can be read
+                progress_cb(pct, f"Simulating {dt.strftime('%Y-%m')} | Capital: ${capital:.0f} | Trades: {len(result.trades)}")
+                await asyncio.sleep(0)
 
-            # Fill 6H buffer — add all 6H candles that have closed before this 1H candle
-            while idx_6h < n_6h and candles_6h[idx_6h]["open_time"] <= ts_ms:
+            # Fill 6H buffer — only add a 6H candle once its LAST 1H has closed.
+            # A 6H candle at bucket B closes when the 1H at B+5h closes (i.e. B+5h <= ts_ms).
+            # build_6h_from_1h pre-builds complete candles, so we just gate on close time
+            # to prevent lookahead (the 6H candle contains all 6 1H data including future ones).
+            while idx_6h < n_6h and candles_6h[idx_6h]["open_time"] + 5 * 3_600_000 <= ts_ms:
                 buf_6h.append(candles_6h[idx_6h])
                 idx_6h += 1
 
-            # Fill 1H buffer
             buf_1h.append(candle_1h)
 
-            # Need enough history
             if len(buf_1h) < 10 or len(buf_6h) < 4:
                 equity_curve.append({"time": ts_ms, "equity": capital, "drawdown": 0.0})
                 prev_price = close_price
@@ -262,17 +286,101 @@ class BacktestEngine:
             buf_list_1h = list(buf_1h)
             buf_list_6h = list(buf_6h)
 
-            # ─── Manage open position ──────────────────────────────
+            # ─── 3M inner loop — price tracking only ───────────────
+            # Entry/exit decisions use 1H close. 3M OHLC is used here
+            # for accurate liquidation, peak/MAE, and trailing stop.
+            for c3m in idx_3m_by_hour.get(ts_ms, []):
+                if current_trade is None:
+                    continue
+
+                # ── Funding charge every 8h UTC boundary ──────────────
+                if cfg.charge_funding:
+                    this_period = c3m["open_time"] // FUNDING_INTERVAL_MS
+                    if last_funding_period is None:
+                        last_funding_period = this_period
+                    elif this_period > last_funding_period:
+                        fr = get_funding_at_time(funding_rates, c3m["open_time"])
+                        notional = current_trade.position_size_usd
+                        cost = notional * fr if current_trade.direction == "LONG" else notional * (-fr)
+                        capital -= cost * (this_period - last_funding_period)
+                        last_funding_period = this_period
+
+                # ── Update peak and MAE using 3M high/low ─────────────
+                entry = current_trade.entry_price
+                lev = cfg.leverage
+                if current_trade.direction == "LONG":
+                    intra_best  = (c3m["high"] - entry) / entry * 100.0 * lev
+                    intra_worst = (c3m["low"]  - entry) / entry * 100.0 * lev
+                    cur_pnl_pct = (c3m["close"] - entry) / entry * 100.0 * lev
+                else:
+                    intra_best  = (entry - c3m["low"])  / entry * 100.0 * lev
+                    intra_worst = (entry - c3m["high"]) / entry * 100.0 * lev
+                    cur_pnl_pct = (entry - c3m["close"]) / entry * 100.0 * lev
+
+                if intra_best > current_trade.peak_profit_pct:
+                    current_trade.peak_profit_pct = intra_best
+                if intra_worst < current_trade.max_adverse_pct:
+                    current_trade.max_adverse_pct = intra_worst
+
+                # ── Liquidation check on 3M OHLC ──────────────────────
+                liq_hit = False
+                if current_trade.direction == "LONG" and c3m["low"] <= current_trade.liquidation_price:
+                    self._close_trade(current_trade, current_trade.liquidation_price, c3m["open_time"], "Liquidated")
+                    current_trade.status = "LIQUIDATED"
+                    capital += current_trade.realized_pnl_usd
+                    result.trades.append(current_trade)
+                    current_trade = None
+                    last_funding_period = None
+                    liq_hit = True
+                elif current_trade.direction == "SHORT" and c3m["high"] >= current_trade.liquidation_price:
+                    self._close_trade(current_trade, current_trade.liquidation_price, c3m["open_time"], "Liquidated")
+                    current_trade.status = "LIQUIDATED"
+                    capital += current_trade.realized_pnl_usd
+                    result.trades.append(current_trade)
+                    current_trade = None
+                    last_funding_period = None
+                    liq_hit = True
+
+                if liq_hit:
+                    continue
+
+                peak_pnl = current_trade.peak_profit_pct
+                tp1_pct  = cfg.tp1_pct * 100   # 20.0
+                tp2_pct  = cfg.tp2_pct * 100   # 30.0
+
+                # ── Trailing stop at 3M resolution ────────────────────
+                # TP1 (20%) hit → 1% trail; TP2 (30%) hit → 5% trail
+                if peak_pnl >= tp1_pct:
+                    trail_pct = (cfg.trailing_after_tp1_peak_high_pct if peak_pnl >= tp2_pct
+                                 else cfg.trailing_after_tp1_peak_low_pct)
+                    drawdown_from_peak = peak_pnl - cur_pnl_pct
+                    if drawdown_from_peak >= trail_pct:
+                        trail_stop_pnl = peak_pnl - trail_pct
+                        if current_trade.direction == "LONG":
+                            trail_px = entry * (1 + trail_stop_pnl / (100.0 * lev))
+                            exit_px = max(trail_px, c3m["low"])
+                        else:
+                            trail_px = entry * (1 - trail_stop_pnl / (100.0 * lev))
+                            exit_px = min(trail_px, c3m["high"])
+                        self._close_trade(current_trade, exit_px, c3m["open_time"],
+                            f"Trailing stop (3M): peak={peak_pnl:.1f}% drawdown={drawdown_from_peak:.1f}%")
+                        capital += current_trade.realized_pnl_usd
+                        result.trades.append(current_trade)
+                        current_trade = None
+                        last_funding_period = None
+                        continue
+
+            # ─── 1H-level exits (emergency candles, 6H reversal) ───
             if current_trade is not None:
                 current_trade, capital, closed = self._update_position(
                     current_trade, candle_1h, buf_list_1h, buf_list_6h, capital
                 )
                 if closed:
                     result.trades.append(current_trade)
-                    trade_counter += 1
                     current_trade = None
+                    last_funding_period = None
 
-            # ─── Try to open new position ──────────────────────────
+            # ─── 1H entry at candle close ──────────────────────────
             if current_trade is None:
                 signal = self._generate_signal(
                     buf_list_1h, buf_list_6h, close_price, dt, ts_ms,
@@ -280,46 +388,35 @@ class BacktestEngine:
                     macro, cfg, block_stats
                 )
                 if signal and capital >= 10:
-                    # ── Position sizing for exact $4,500 liquidation buffer ──
-                    # Cross-margin math: liq_price = entry ± buffer (exact)
-                    # qty = capital / (buffer + entry × maint_rate)
-                    MAINT_RATE = 0.005
-                    MAX_NOTIONAL = 20_000_000.0  # $20M cap — Bitunix liquidity ceiling
-                    target_buf = cfg.liquidation_buffer_usd  # $4,500
-
-                    # Apply size modifier (FOMC/funding) — slightly adjusts buffer
                     size_mod = signal["size_mod"]
-                    qty = capital * size_mod / (target_buf + close_price * MAINT_RATE)
-                    pos_size = qty * close_price
-
-                    # Cap at exchange liquidity limit
-                    if pos_size > MAX_NOTIONAL:
-                        pos_size = MAX_NOTIONAL
-                        qty = pos_size / close_price
-
-                    margin = pos_size / cfg.leverage
-
-                    # Liquidation prices are exactly ± buffer from entry
+                    # Apply entry slippage adversely
                     if signal["direction"] == "LONG":
-                        liq_price = close_price - target_buf * size_mod
+                        entry_px = close_price * (1 + cfg.slippage_pct)
                     else:
-                        liq_price = close_price + target_buf * size_mod
-
-                    liq_buffer = abs(close_price - liq_price)
-
-                    if margin < 5.0:  # sanity: need at least $5 margin
-                        _block(block_stats, "margin_too_small")
-                    else:
+                        entry_px = close_price * (1 - cfg.slippage_pct)
+                    # 30% of capital as margin; notional = margin × leverage
+                    margin = capital * size_mod * cfg.position_size_pct
+                    pos_size = min(margin * cfg.leverage, MAX_NOTIONAL)
+                    margin = pos_size / cfg.leverage  # recalculate if notional was capped
+                    qty = pos_size / entry_px
+                    # Cross-margin liq: liq_dist = entry × (account / notional - MAINT_RATE)
+                    # = entry × (1/(size_mod × position_size_pct × leverage) - MAINT_RATE)
+                    liq_dist = entry_px * max(
+                        1.0 / (size_mod * cfg.position_size_pct * cfg.leverage) - MAINT_RATE, 0.001
+                    )
+                    liq_px = (entry_px - liq_dist if signal["direction"] == "LONG"
+                              else entry_px + liq_dist)
+                    if margin >= 5.0:
                         trade_counter += 1
                         current_trade = SimTrade(
                             trade_id=trade_counter,
                             direction=signal["direction"],
-                            entry_price=close_price,
+                            entry_price=entry_px,
                             entry_time=ts_ms,
                             margin_usd=margin,
                             position_size_usd=pos_size,
                             leverage=cfg.leverage,
-                            liquidation_price=liq_price,
+                            liquidation_price=liq_px,
                             zone=signal["zone"],
                             entry_reason=signal["reason"],
                             ha_6h_color=signal["ha_6h_color"],
@@ -330,10 +427,11 @@ class BacktestEngine:
                             status="OPEN",
                         )
                         zone_tracker.record_signal(signal["zone"], signal["direction"])
+                        last_funding_period = None
 
             prev_price = close_price
 
-            # ─── Track equity ──────────────────────────────────────
+            # ─── Track equity ───────────────────────────────────────
             unrealized = 0.0
             if current_trade:
                 qty_open = current_trade.position_size_usd / current_trade.entry_price
@@ -416,11 +514,10 @@ class BacktestEngine:
         ha_6h_color = ha_6h[-1]["color"]
         ha_6h_trend = get_trend(ha_6h, lookback=3)
 
-        # Both HA must agree AND 6H trend must be confirmed by multiple candles
-        # (mirrors live signal_engine: bullish_trend/bearish_trend requirement)
-        if ha_1h_color == "GREEN" and ha_6h_color == "GREEN" and ha_6h_trend in ("BULLISH", "STRONG_BULLISH"):
+        # 1H GREEN + 6H GREEN → LONG; 1H RED + 6H RED → SHORT (no trend confirmation required)
+        if ha_1h_color == "GREEN" and ha_6h_color == "GREEN":
             direction = "LONG"
-        elif ha_1h_color == "RED" and ha_6h_color == "RED" and ha_6h_trend in ("BEARISH", "STRONG_BEARISH"):
+        elif ha_1h_color == "RED" and ha_6h_color == "RED":
             direction = "SHORT"
         else:
             _block(block_stats, "ha_conflict")
@@ -544,81 +641,17 @@ class BacktestEngine:
         capital: float,
     ) -> Tuple[SimTrade, float, bool]:
         """
-        Update an open position. Returns (trade, capital, was_closed).
-        Exit logic mirrors the live signal_engine.get_exit_signal() exactly:
-        - P&L is leverage-adjusted %: pnl_pct = (price_delta / entry) * leverage * 100
-        - TP1 at 20% P&L — then trail at -1% from peak (or -5% if peak >= 25%)
+        1H-only exit checks. Liquidation, peak tracking, trailing stop, and
+        3M HA exits are handled at 3M resolution in the inner loop.
+        This handles only signals that are inherently 1H/6H based:
         - Emergency close: 4 consecutive opposing 1H HA candles
         - 6H HA reversal
         """
         cfg = self.config
-        high = candle["high"]
-        low = candle["low"]
         close = candle["close"]
         ts_ms = candle["open_time"]
-        entry = trade.entry_price
-        lev = cfg.leverage
 
-        # ─── 1. Liquidation check (intra-candle high/low) ─────────
-        if trade.direction == "LONG" and low <= trade.liquidation_price:
-            self._close_trade(trade, trade.liquidation_price, ts_ms, "Liquidated")
-            trade.status = "LIQUIDATED"
-            capital += trade.realized_pnl_usd
-            return trade, capital, True
-
-        if trade.direction == "SHORT" and high >= trade.liquidation_price:
-            self._close_trade(trade, trade.liquidation_price, ts_ms, "Liquidated")
-            trade.status = "LIQUIDATED"
-            capital += trade.realized_pnl_usd
-            return trade, capital, True
-
-        # ─── 2. Leverage-adjusted P&L % ───────────────────────────
-        if trade.direction == "LONG":
-            current_pnl_pct = (close - entry) / entry * 100.0 * lev
-            intra_best_pnl  = (high  - entry) / entry * 100.0 * lev
-        else:
-            current_pnl_pct = (entry - close) / entry * 100.0 * lev
-            intra_best_pnl  = (entry - low)   / entry * 100.0 * lev
-
-        # Update peak (using intra-candle best price, same as live system)
-        if intra_best_pnl > trade.peak_profit_pct:
-            trade.peak_profit_pct = intra_best_pnl
-
-        peak_pnl = trade.peak_profit_pct
-
-        # ─── 3. TP1 trailing stop (matches live get_exit_signal) ──
-        tp1_pct = cfg.tp1_pct * 100  # 20.0
-
-        if peak_pnl >= tp1_pct:
-            trail_pct = (cfg.trailing_after_tp1_peak_high_pct
-                         if peak_pnl >= cfg.trailing_peak_threshold_pct
-                         else cfg.trailing_after_tp1_peak_low_pct)
-
-            drawdown = peak_pnl - current_pnl_pct
-            if drawdown >= trail_pct:
-                # Convert trail stop P&L back to a price for realistic fill
-                trail_stop_pnl = peak_pnl - trail_pct
-                if trade.direction == "LONG":
-                    trail_price = entry * (1 + trail_stop_pnl / (100.0 * lev))
-                    exit_px = max(trail_price, low)
-                else:
-                    trail_price = entry * (1 - trail_stop_pnl / (100.0 * lev))
-                    exit_px = min(trail_price, high)
-                self._close_trade(trade, exit_px, ts_ms,
-                    f"Trailing stop: peak={peak_pnl:.1f}% current={current_pnl_pct:.1f}% "
-                    f"drawdown={drawdown:.1f}% > trail={trail_pct}%")
-                capital += trade.realized_pnl_usd
-                return trade, capital, True
-
-        elif current_pnl_pct >= (tp1_pct - 1.0):
-            # Near TP1 — matches live get_exit_signal() TP1 protection branch
-            if peak_pnl >= tp1_pct and (peak_pnl - current_pnl_pct) >= 1.0:
-                self._close_trade(trade, close, ts_ms,
-                    f"TP1 protection: reached {peak_pnl:.1f}%, now at {current_pnl_pct:.1f}%")
-                capital += trade.realized_pnl_usd
-                return trade, capital, True
-
-        # ─── 4. 4-candle emergency close ──────────────────────────
+        # ─── Emergency candles ─────────────────────────────────────
         ha_1h = compute_heikin_ashi(buf_1h[-20:])
         consecutive = count_consecutive_opposite(ha_1h, trade.direction)
         if consecutive >= cfg.emergency_candles:
@@ -627,7 +660,7 @@ class BacktestEngine:
             capital += trade.realized_pnl_usd
             return trade, capital, True
 
-        # ─── 5. 6H reversal check ─────────────────────────────────
+        # ─── 6H reversal ──────────────────────────────────────────
         ha_6h = compute_heikin_ashi(buf_6h[-10:])
         if detect_reversal(ha_6h, trade.direction):
             self._close_trade(trade, close, ts_ms, "6H HA reversal detected")
@@ -637,12 +670,26 @@ class BacktestEngine:
         return trade, capital, False
 
     def _close_trade(self, trade: SimTrade, exit_price: float, exit_time: int, reason: str, capital: float = None):
-        """Finalize a trade. P&L = qty × price_delta."""
+        """Finalize a trade. Applies exit slippage and deducts round-trip fees."""
+        cfg = self.config
+        is_liq = "Liquidat" in reason
+
+        # Apply exit slippage adversely (not on liquidations — price is fixed)
+        if not is_liq:
+            if trade.direction == "LONG":
+                exit_price = exit_price * (1 - cfg.slippage_pct)
+            else:
+                exit_price = exit_price * (1 + cfg.slippage_pct)
+
         qty = trade.position_size_usd / trade.entry_price
         if trade.direction == "LONG":
             pnl_usd = qty * (exit_price - trade.entry_price)
         else:
             pnl_usd = qty * (trade.entry_price - exit_price)
+
+        # Deduct round-trip taker fees (entry notional + exit notional)
+        exit_notional = qty * exit_price
+        pnl_usd -= (trade.position_size_usd + exit_notional) * cfg.taker_fee_pct
 
         pnl_pct = (pnl_usd / trade.margin_usd * 100) if trade.margin_usd > 0 else 0.0
 
@@ -651,7 +698,7 @@ class BacktestEngine:
         trade.exit_reason = reason
         trade.realized_pnl_pct = round(pnl_pct, 2)
         trade.realized_pnl_usd = round(pnl_usd, 2)
-        trade.status = "CLOSED" if "Liquidat" not in reason else "LIQUIDATED"
+        trade.status = "CLOSED" if not is_liq else "LIQUIDATED"
 
     def _compute_stats(self, result: BacktestResult, initial_capital: float, peak_capital: float, final_capital: float):
         """Compute summary statistics from trades and equity curve."""
