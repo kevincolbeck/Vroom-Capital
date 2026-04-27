@@ -20,7 +20,7 @@ from sqlalchemy import select, update, delete
 class BotEngine:
 
     LOOP_INTERVAL_SECONDS = 60      # Signal scan when flat
-    POSITION_POLL_SECONDS = 10      # Exit check when in a position
+    POSITION_POLL_SECONDS = 5       # Exit check when in a position
 
     def __init__(self):
         self.signal_engine = SignalEngine()
@@ -281,7 +281,12 @@ class BotEngine:
     # ─────────────────────────────────────────────────────────────────
 
     async def emergency_close_all(self, reason: str = "Manual emergency close"):
-        """Emergency close all positions — master and copy traders."""
+        """Emergency close all positions — master and copy traders.
+        Pauses the bot afterwards so it doesn't immediately re-enter."""
+        # Pause first so the main loop doesn't open a new position while we close
+        self._paused = True
+        await self._set_status(BotStatus.PAUSED)
+
         client = get_bitunix_client()
         async with AsyncSessionLocal() as db:
             pos_manager = PositionManager(client, db)
@@ -303,7 +308,7 @@ class BotEngine:
                 await copy_manager.close_copy_positions(position, reason)
 
             await copy_manager.emergency_close_all(reason)
-            await self._log("WARNING", "OVERRIDE", f"Emergency close all: {reason}")
+            await self._log("WARNING", "OVERRIDE", f"Emergency close all: {reason} — bot paused, resume when ready")
             logger.warning(f"Emergency close all executed: {reason}")
 
     async def force_open(
