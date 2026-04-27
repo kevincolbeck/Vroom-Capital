@@ -146,19 +146,15 @@ class SignalEngine:
             signal.ha_1h_consecutive = _streak
 
         # ─── Step 2: Determine preliminary direction ────────────────────────
-        # Both HA timeframes must agree AND 6h trend must be confirmed by
-        # multiple candles — prevents re-entry right after a reversal when
-        # the new forming candle briefly shows the prior color.
-        bullish_trend = signal.ha_6h_trend in ("BULLISH", "STRONG_BULLISH")
-        bearish_trend = signal.ha_6h_trend in ("BEARISH", "STRONG_BEARISH")
-
-        if signal.ha_1h_color == "GREEN" and signal.ha_6h_color == "GREEN" and bullish_trend:
+        # Both HA timeframes must agree on color — 1H GREEN + 6H GREEN for LONG,
+        # 1H RED + 6H RED for SHORT.
+        if signal.ha_1h_color == "GREEN" and signal.ha_6h_color == "GREEN":
             candidate_direction = "LONG"
-        elif signal.ha_1h_color == "RED" and signal.ha_6h_color == "RED" and bearish_trend:
+        elif signal.ha_1h_color == "RED" and signal.ha_6h_color == "RED":
             candidate_direction = "SHORT"
         else:
             signal.block_reasons.append(
-                f"HA not confirmed: 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color}, trend={signal.ha_6h_trend} — wait for alignment"
+                f"HA not confirmed: 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color} — wait for alignment"
             )
             signal.direction = None
             signal.strength = "BLOCKED"

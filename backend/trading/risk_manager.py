@@ -44,29 +44,28 @@ class RiskManager:
         MAINT_RATE = 0.005
         MAX_NOTIONAL = 20_000_000.0
 
-        # Size FROM the buffer: position is sized so liq is always $buffer away from entry
-        target_buf = self.liquidation_buffer_usd * size_modifier
-        quantity_btc = account_balance * size_modifier / (target_buf + current_price * MAINT_RATE)
-        position_size_usd = quantity_btc * current_price
+        # 30% of capital as margin; notional = margin × leverage
+        margin_usd = account_balance * size_modifier * self.position_size_pct
+        position_size_usd = margin_usd * lev
         if position_size_usd > MAX_NOTIONAL:
             position_size_usd = MAX_NOTIONAL
-            quantity_btc = position_size_usd / current_price
-        margin_usd = position_size_usd / lev
+            margin_usd = position_size_usd / lev
+        quantity_btc = position_size_usd / current_price
 
-        # Liquidation price: exactly target_buf away from entry by construction
-        # TP prices reflect actual exit_signal trigger: pnl_pct = (delta/entry)*lev*100 >= tp_pct*100
+        # Liquidation price using standard cross-margin formula: entry × (1 ∓ (1/lev - MAINT_RATE))
+        liq_distance = current_price * max(1.0 / lev - MAINT_RATE, 0.001)
         tp1_delta = current_price * settings.tp1_pct / lev
         tp2_delta = current_price * settings.tp2_pct / lev
         if direction == "LONG":
-            liquidation_price = current_price - target_buf
+            liquidation_price = current_price - liq_distance
             tp1_price = current_price + tp1_delta
             tp2_price = current_price + tp2_delta
         else:
-            liquidation_price = current_price + target_buf
+            liquidation_price = current_price + liq_distance
             tp1_price = current_price - tp1_delta
             tp2_price = current_price - tp2_delta
 
-        liquidation_buffer = target_buf
+        liquidation_buffer = liq_distance
 
         # Validate
         is_valid = True
