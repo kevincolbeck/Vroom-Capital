@@ -116,18 +116,22 @@ class SignalEngine:
         signal.ha_6h_trend = get_trend(ha_6h, lookback=3)
 
         # ─── Step 2: Determine preliminary direction ────────────────────────
-        # Both HA timeframes must agree
-        if signal.ha_1h_color == "GREEN" and signal.ha_6h_color == "GREEN":
+        # Both HA timeframes must agree AND 6h trend must be confirmed by
+        # multiple candles — prevents re-entry right after a reversal when
+        # the new forming candle briefly shows the prior color.
+        bullish_trend = signal.ha_6h_trend in ("BULLISH", "STRONG_BULLISH")
+        bearish_trend = signal.ha_6h_trend in ("BEARISH", "STRONG_BEARISH")
+
+        if signal.ha_1h_color == "GREEN" and signal.ha_6h_color == "GREEN" and bullish_trend:
             candidate_direction = "LONG"
-        elif signal.ha_1h_color == "RED" and signal.ha_6h_color == "RED":
+        elif signal.ha_1h_color == "RED" and signal.ha_6h_color == "RED" and bearish_trend:
             candidate_direction = "SHORT"
         else:
             signal.block_reasons.append(
-                f"HA timeframe conflict: 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color} — wait for alignment"
+                f"HA not confirmed: 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color}, trend={signal.ha_6h_trend} — wait for alignment"
             )
             signal.direction = None
             signal.strength = "BLOCKED"
-            signal.ha_6h_trend = signal.ha_6h_trend
             signal.velocity_data = compute_velocity(candles_1h)
             signal.time_context = get_time_context()
             signal.macro_context = self.macro_calendar.get_macro_context()

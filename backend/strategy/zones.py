@@ -124,8 +124,8 @@ class ZoneTracker:
         dir_state["count"] = dir_state.get("count", 0) + 1
         dir_state["last_signal"] = datetime.utcnow()
 
-        # Apply cooldown after 2 consecutive signals at the same zone+direction
-        if dir_state["count"] >= 2:
+        # Apply cooldown immediately after the first trade in a zone
+        if dir_state["count"] >= 1:
             dir_state["cooldown_until"] = datetime.utcnow() + timedelta(minutes=self.cooldown_minutes)
             logger.warning(f"Zone {zone_key} {direction}: Cooldown triggered for {self.cooldown_minutes}min")
 

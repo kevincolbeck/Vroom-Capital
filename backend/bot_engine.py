@@ -242,6 +242,17 @@ class BotEngine:
                     self._last_signal = signal.to_dict()
 
                     if signal.should_trade:
+                        # Verify no position exists on exchange before opening
+                        try:
+                            ex_pos = await client.get_open_positions()
+                            if ex_pos:
+                                await self._log("WARNING", "RISK",
+                                    f"Exchange already has open position — skipping entry to avoid stacking")
+                                signal.should_trade = False
+                        except Exception:
+                            pass
+
+                    if signal.should_trade:
                         # Get account balance
                         try:
                             balance_data = await client.get_account_balance()
@@ -302,12 +313,13 @@ class BotEngine:
             try:
                 ex_positions = await client.get_open_positions()
                 for ep in (ex_positions or []):
-                    raw_qty = ep.get("size") or ep.get("qty") or ep.get("quantity") or ep.get("positionAmt")
+                    raw_qty = ep.get("qty") or ep.get("size") or ep.get("quantity") or ep.get("positionAmt")
                     side = ep.get("side", "LONG")
+                    position_id = ep.get("positionId")
                     if raw_qty:
                         qty = abs(float(raw_qty))
                         if qty >= 0.0001:
-                            result = await client.close_position(side=side, quantity=qty)
+                            result = await client.close_position(side=side, quantity=qty, position_id=position_id)
                             logger.info(f"Emergency exchange close: {side} {qty} → {result}")
             except Exception as e:
                 logger.error(f"Emergency exchange close failed: {e}")

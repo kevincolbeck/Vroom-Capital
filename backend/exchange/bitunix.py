@@ -311,9 +311,13 @@ class BitunixClient:
             logger.error(f"Failed to place order: {e}")
             raise
 
-    async def close_position(self, side: str, quantity: float) -> Dict:
-        """Close a position by placing opposite reduce-only order."""
-        close_side = "SELL" if side == "LONG" else "BUY"
+    async def close_position(self, side: str, quantity: float, position_id: str = None) -> Dict:
+        """Close a position by placing opposite reduce-only order.
+        side: 'LONG'/'BUY' for long positions, 'SHORT'/'SELL' for shorts.
+        position_id: required for HEDGE mode accounts."""
+        # Normalize — exchange returns BUY/SELL, we accept LONG/SHORT too
+        close_side = "SELL" if side in ("LONG", "BUY") else "BUY"
+
         if not self.api_key:
             return {"orderId": f"paper_close_{int(time.time())}", "paper": True}
 
@@ -325,9 +329,12 @@ class BitunixClient:
             "orderType": "MARKET",
             "qty": str(quantity),
         }
+        if position_id:
+            body["positionId"] = position_id
+
         try:
             result = await self._post_signed(path, body)
-            logger.info(f"Position closed: {side} {quantity} BTC")
+            logger.info(f"Position closed: {side} {quantity} BTC → {result}")
             return result
         except Exception as e:
             logger.error(f"Failed to close position: {e}")
