@@ -262,6 +262,10 @@ export default function Dashboard() {
 
   const winRate = bot.win_rate || 0
   const totalPnl = bot.total_pnl_usd || 0
+  // Return % = net closed-trade PnL / current balance. Deposits change the balance
+  // but not totalPnl, so they don't inflate this number.
+  const accountBalance = account.balance || 0
+  const returnPct = accountBalance > 0 ? (totalPnl / accountBalance) * 100 : 0
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -286,9 +290,9 @@ export default function Dashboard() {
           color="text-white"
         />
         <MetricCard
-          label="Total P&L"
-          value={formatUsd(totalPnl)}
-          sub={`${bot.total_trades || 0} trades`}
+          label="Net Return"
+          value={`${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%`}
+          sub={`${totalPnl >= 0 ? '+' : ''}${formatUsd(totalPnl)} after fees · ${bot.total_trades || 0} trades`}
           icon={BarChart2}
           color={totalPnl >= 0 ? 'text-profit' : 'text-loss'}
         />
@@ -461,11 +465,16 @@ export default function Dashboard() {
                 <div className="text-xl font-bold text-white mt-0.5">{bot.total_trades || 0}</div>
               </div>
               <div className="bg-dark-700 rounded-lg p-3 text-center">
-                <div className="text-xs text-gray-500">Total PnL</div>
+                <div className="text-xs text-gray-500">Net Return</div>
                 <div className={clsx('text-xl font-bold font-mono mt-0.5',
                   totalPnl >= 0 ? 'text-profit' : 'text-loss'
                 )}>
-                  {formatUsd(totalPnl)}
+                  {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(2)}%
+                </div>
+                <div className={clsx('text-xs font-mono mt-0.5',
+                  totalPnl >= 0 ? 'text-profit/70' : 'text-loss/70'
+                )}>
+                  {totalPnl >= 0 ? '+' : ''}{formatUsd(totalPnl)}
                 </div>
               </div>
             </div>
