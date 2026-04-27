@@ -54,14 +54,17 @@ class RiskManager:
         margin_usd = position_size_usd / lev
 
         # Liquidation price: exactly target_buf away from entry by construction
+        # TP prices reflect actual exit_signal trigger: pnl_pct = (delta/entry)*lev*100 >= tp_pct*100
+        tp1_delta = current_price * settings.tp1_pct / lev
+        tp2_delta = current_price * settings.tp2_pct / lev
         if direction == "LONG":
             liquidation_price = current_price - target_buf
-            tp1_price = current_price + self.liquidation_buffer_usd * settings.tp1_pct
-            tp2_price = current_price + self.liquidation_buffer_usd * settings.tp2_pct
+            tp1_price = current_price + tp1_delta
+            tp2_price = current_price + tp2_delta
         else:
             liquidation_price = current_price + target_buf
-            tp1_price = current_price - self.liquidation_buffer_usd * settings.tp1_pct
-            tp2_price = current_price - self.liquidation_buffer_usd * settings.tp2_pct
+            tp1_price = current_price - tp1_delta
+            tp2_price = current_price - tp2_delta
 
         liquidation_buffer = target_buf
 

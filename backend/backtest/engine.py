@@ -608,6 +608,14 @@ class BacktestEngine:
                 capital += trade.realized_pnl_usd
                 return trade, capital, True
 
+        elif current_pnl_pct >= (tp1_pct - 1.0):
+            # Near TP1 — matches live get_exit_signal() TP1 protection branch
+            if peak_pnl >= tp1_pct and (peak_pnl - current_pnl_pct) >= 1.0:
+                self._close_trade(trade, close, ts_ms,
+                    f"TP1 protection: reached {peak_pnl:.1f}%, now at {current_pnl_pct:.1f}%")
+                capital += trade.realized_pnl_usd
+                return trade, capital, True
+
         # ─── 4. 4-candle emergency close ──────────────────────────
         ha_1h = compute_heikin_ashi(buf_1h[-20:])
         consecutive = count_consecutive_opposite(ha_1h, trade.direction)

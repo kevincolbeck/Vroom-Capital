@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Strategy defaults
     leverage: int = Field(default=75)
     position_size_pct: float = Field(default=0.30)
-    liquidation_buffer_usd: float = Field(default=4500.0)
+    liquidation_buffer_usd: float = Field(default=3250.0)
     tp1_pct: float = Field(default=0.20)
     tp2_pct: float = Field(default=0.30)
     velocity_threshold_pct: float = Field(default=1.5)

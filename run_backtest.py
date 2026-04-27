@@ -17,7 +17,7 @@ import types
 mock_settings = types.SimpleNamespace(
     leverage=75,
     position_size_pct=0.30,
-    liquidation_buffer_usd=4500.0,
+    liquidation_buffer_usd=3250.0,
     tp1_pct=0.20,
     tp2_pct=0.30,
     velocity_threshold_pct=1.5,
@@ -52,7 +52,7 @@ async def main():
         initial_capital=10000.0,
         leverage=75,
         position_size_pct=0.30,
-        liquidation_buffer_usd=4500.0,
+        liquidation_buffer_usd=3250.0,
         tp1_pct=0.20,
         tp2_pct=0.30,
         velocity_threshold_pct=1.5,
