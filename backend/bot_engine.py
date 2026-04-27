@@ -19,8 +19,9 @@ from sqlalchemy import select, update, delete
 
 class BotEngine:
 
-    LOOP_INTERVAL_SECONDS = 60      # Signal scan when flat
-    POSITION_POLL_SECONDS = 5       # Exit check when in a position
+    LOOP_INTERVAL_SECONDS = 60      # Full signal scan when flat
+    CANDLE_CHECK_SECONDS  = 15      # HA-based exit check (needs klines)
+    PRICE_POLL_SECONDS    = 1       # Trailing stop check (ticker only)
 
     def __init__(self):
         self.signal_engine = SignalEngine()
@@ -88,28 +89,39 @@ class BotEngine:
     async def _main_loop(self):
         """Main bot loop.
 
-        When flat: full tick (signal scan + candles) every 60s.
-        When in a position: lightweight price+exit check every 10s,
-        full tick every 60s for signal refresh.
+        When flat  : full signal scan every 60s.
+        In position: 1s price-only trailing stop check,
+                     15s candle-based HA exit check,
+                     60s full signal refresh.
         """
-        last_full_tick = 0.0
+        import time
+        last_candle_check = 0.0
+        last_full_tick    = 0.0
+
         while self._running:
             try:
-                import time
                 now = time.monotonic()
                 has_open = await self._has_open_position()
 
                 if has_open:
-                    # Fast exit check — only ticker + exit logic, no candle fetch
-                    await self._position_tick()
-                    # Full tick (candles + signal) every 60s even when in position
+                    # 1s: trailing stop only (ticker, no klines)
+                    await self._trailing_stop_tick()
+
+                    # 15s: HA-based exits (needs klines)
+                    if now - last_candle_check >= self.CANDLE_CHECK_SECONDS:
+                        await self._position_tick()
+                        last_candle_check = time.monotonic()
+
+                    # 60s: full signal tick even while in position
                     if now - last_full_tick >= self.LOOP_INTERVAL_SECONDS:
                         await self._tick()
                         last_full_tick = time.monotonic()
-                    await asyncio.sleep(self.POSITION_POLL_SECONDS)
+
+                    await asyncio.sleep(self.PRICE_POLL_SECONDS)
                 else:
                     await self._tick()
-                    last_full_tick = time.monotonic()
+                    last_full_tick    = time.monotonic()
+                    last_candle_check = time.monotonic()
                     await asyncio.sleep(self.LOOP_INTERVAL_SECONDS)
 
             except asyncio.CancelledError:
@@ -121,6 +133,37 @@ class BotEngine:
                 await asyncio.sleep(30)
                 await self._set_status(BotStatus.RUNNING)
                 continue
+
+    async def _trailing_stop_tick(self):
+        """1-second tick — ticker only, checks trailing stop. No klines fetched."""
+        client = get_bitunix_client()
+        try:
+            ticker = await client.get_ticker()
+            current_price = ticker["price"]
+        except Exception:
+            return
+
+        async with AsyncSessionLocal() as db:
+            pos_manager = PositionManager(client, db)
+            open_positions = await pos_manager.get_open_positions()
+            if not open_positions:
+                return
+
+            copy_manager = CopyTradingManager(db)
+            for position in open_positions:
+                position = await pos_manager.update_position(position, current_price)
+
+                if not self._manual_override:
+                    should_exit, exit_reason = self.signal_engine.check_trailing_stop(
+                        position_side=position.side,
+                        entry_price=position.entry_price,
+                        current_price=current_price,
+                        peak_profit_pct=position.peak_profit_pct,
+                    )
+                    if should_exit:
+                        await pos_manager.close_position(position, current_price, exit_reason)
+                        await copy_manager.close_copy_positions(position, exit_reason)
+                        await self._update_bot_stats(db, position)
 
     async def _has_open_position(self) -> bool:
         async with AsyncSessionLocal() as db:

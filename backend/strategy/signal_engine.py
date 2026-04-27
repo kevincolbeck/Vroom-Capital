@@ -308,6 +308,40 @@ class SignalEngine:
         logger.info(f"Signal generated: {signal.direction} ({signal.strength}) — {signal.entry_reason}")
         return signal
 
+    def check_trailing_stop(
+        self,
+        position_side: str,
+        entry_price: float,
+        current_price: float,
+        peak_profit_pct: float,
+    ) -> Tuple[bool, str]:
+        """Price-only trailing stop check — no candles needed. Called every 1s."""
+        if position_side == "LONG":
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100.0 * settings.leverage
+        else:
+            pnl_pct = ((entry_price - current_price) / entry_price) * 100.0 * settings.leverage
+
+        if pnl_pct >= settings.tp1_pct * 100:
+            trail_pct = (
+                settings.trailing_after_tp1_peak_high_pct
+                if peak_profit_pct >= settings.trailing_peak_threshold_pct
+                else settings.trailing_after_tp1_peak_low_pct
+            )
+            drawdown_from_peak = peak_profit_pct - pnl_pct
+            if drawdown_from_peak >= trail_pct:
+                return True, (
+                    f"Trailing stop triggered: peak={peak_profit_pct:.1f}%, "
+                    f"current={pnl_pct:.1f}%, "
+                    f"drawdown={drawdown_from_peak:.1f}% > trail={trail_pct}%"
+                )
+        elif pnl_pct >= (settings.tp1_pct * 100 - 1):
+            if peak_profit_pct >= settings.tp1_pct * 100 and (peak_profit_pct - pnl_pct) >= 1.0:
+                return True, (
+                    f"TP1 trailing stop: reached {peak_profit_pct:.1f}%, now at {pnl_pct:.1f}%"
+                )
+
+        return False, "Hold — trailing stop not triggered"
+
     def get_exit_signal(
         self,
         position_side: str,

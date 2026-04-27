@@ -115,7 +115,10 @@ function PositionCard({ position }: { position: any }) {
   const isLong = position.side === 'LONG'
   const pnlPct = position.unrealized_pnl_pct || 0
   const pnlUsd = position.unrealized_pnl_usd ?? (position.margin_used_usd * pnlPct / 100)
+  const feesUsd = position.fees_usd ?? 0
+  const netPnlUsd = position.net_pnl_usd ?? (pnlUsd - feesUsd)
   const pnlColor = pnlPct > 0 ? 'text-profit' : pnlPct < 0 ? 'text-loss' : 'text-gray-400'
+  const netColor = netPnlUsd > 0 ? 'text-profit' : netPnlUsd < 0 ? 'text-loss' : 'text-gray-400'
 
   const leverage = position.leverage || 75
   const tp1Move = position.entry_price * 0.20 / leverage
@@ -178,6 +181,22 @@ function PositionCard({ position }: { position: any }) {
         <div>
           <div className="text-gray-500">Notional</div>
           <div className="font-mono text-gray-300">{formatUsd(position.position_size_usd)}</div>
+        </div>
+      </div>
+
+      {/* Fee-adjusted P&L */}
+      <div className="bg-dark-700/60 rounded-lg px-3 py-2 mb-3 space-y-1">
+        <div className="flex justify-between text-xs">
+          <span className="text-gray-500">Gross P&L</span>
+          <span className={clsx('font-mono', pnlColor)}>{pnlUsd >= 0 ? '+' : ''}{formatUsd(pnlUsd)}</span>
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-gray-500">Fees (0.12% RT)</span>
+          <span className="font-mono text-loss">-{formatUsd(feesUsd)}</span>
+        </div>
+        <div className="flex justify-between text-xs border-t border-white/10 pt-1">
+          <span className="text-gray-400 font-medium">Net P&L</span>
+          <span className={clsx('font-mono font-bold', netColor)}>{netPnlUsd >= 0 ? '+' : ''}{formatUsd(netPnlUsd)}</span>
         </div>
       </div>
 

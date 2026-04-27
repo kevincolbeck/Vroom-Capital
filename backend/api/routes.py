@@ -280,6 +280,13 @@ async def get_positions(
 
         pnl_usd = round((p.margin_used_usd or 0) * pnl_pct / 100, 2)
 
+        # Bitunix taker fee: 0.06% per side = 0.12% round-trip on notional
+        fees_usd = round((p.position_size_usd or 0) * 0.0012, 2)
+        if p.status == PositionStatus.OPEN:
+            net_pnl_usd = round(pnl_usd - fees_usd, 2)
+        else:
+            net_pnl_usd = round((p.realized_pnl_usd or 0) - fees_usd, 2)
+
         data.append({
             "id": p.id,
             "side": p.side,
@@ -295,6 +302,8 @@ async def get_positions(
             "unrealized_pnl_usd": pnl_usd,
             "realized_pnl_pct": p.realized_pnl_pct,
             "realized_pnl_usd": p.realized_pnl_usd,
+            "fees_usd": fees_usd,
+            "net_pnl_usd": net_pnl_usd,
             "peak_profit_pct": p.peak_profit_pct,
             "zone": p.zone,
             "signal_strength": p.signal_strength,
