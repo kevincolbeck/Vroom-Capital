@@ -405,7 +405,9 @@ class SignalEngine:
         else:
             pnl_pct = ((entry_price - current_price) / entry_price) * 100.0 * settings.leverage
 
-        if pnl_pct >= settings.tp1_pct * 100:
+        # Gate on peak having reached TP1 — not on current PnL.
+        # This ensures the trail fires even if price has crashed back below 19%.
+        if peak_profit_pct >= settings.tp1_pct * 100:
             trail_pct = (
                 settings.trailing_after_tp1_peak_high_pct
                 if peak_profit_pct >= settings.trailing_peak_threshold_pct
@@ -414,14 +416,9 @@ class SignalEngine:
             drawdown_from_peak = peak_profit_pct - pnl_pct
             if drawdown_from_peak >= trail_pct:
                 return True, (
-                    f"Trailing stop triggered: peak={peak_profit_pct:.1f}%, "
+                    f"Trailing stop: peak={peak_profit_pct:.1f}%, "
                     f"current={pnl_pct:.1f}%, "
-                    f"drawdown={drawdown_from_peak:.1f}% > trail={trail_pct}%"
-                )
-        elif pnl_pct >= (settings.tp1_pct * 100 - 1):
-            if peak_profit_pct >= settings.tp1_pct * 100 and (peak_profit_pct - pnl_pct) >= 1.0:
-                return True, (
-                    f"TP1 trailing stop: reached {peak_profit_pct:.1f}%, now at {pnl_pct:.1f}%"
+                    f"drawdown={drawdown_from_peak:.1f}% >= trail={trail_pct}%"
                 )
 
         return False, "Hold — trailing stop not triggered"
@@ -451,28 +448,20 @@ class SignalEngine:
         current_pnl_pct = pnl_pct
 
         # ─── Trailing stop logic ──────────────────────────────────────────
-        if current_pnl_pct >= settings.tp1_pct * 100:
-            # We've hit TP1 (20% profit)
-            if peak_profit_pct >= settings.trailing_peak_threshold_pct:
-                # Peak was 25%+, trail at -5% from peak
-                trail_pct = settings.trailing_after_tp1_peak_high_pct
-            else:
-                # Peak under 25%, trail at -1% from peak
-                trail_pct = settings.trailing_after_tp1_peak_low_pct
-
+        # Gate on peak having reached TP1 — not on current PnL.
+        # This ensures the trail fires even if price has crashed back below 19%.
+        if peak_profit_pct >= settings.tp1_pct * 100:
+            trail_pct = (
+                settings.trailing_after_tp1_peak_high_pct
+                if peak_profit_pct >= settings.trailing_peak_threshold_pct
+                else settings.trailing_after_tp1_peak_low_pct
+            )
             drawdown_from_peak = peak_profit_pct - current_pnl_pct
             if drawdown_from_peak >= trail_pct:
                 return True, (
-                    f"Trailing stop triggered: peak={peak_profit_pct:.1f}%, "
+                    f"Trailing stop: peak={peak_profit_pct:.1f}%, "
                     f"current={current_pnl_pct:.1f}%, "
-                    f"drawdown={drawdown_from_peak:.1f}% > trail={trail_pct}%"
-                )
-
-        elif current_pnl_pct >= (settings.tp1_pct * 100 - 1):
-            # Near TP1 but fell back — protect gains with 19% trailing
-            if peak_profit_pct >= settings.tp1_pct * 100 and (peak_profit_pct - current_pnl_pct) >= 1.0:
-                return True, (
-                    f"TP1 trailing stop: reached {peak_profit_pct:.1f}%, now at {current_pnl_pct:.1f}%"
+                    f"drawdown={drawdown_from_peak:.1f}% >= trail={trail_pct}%"
                 )
 
         # ─── 4-candle emergency close ─────────────────────────────────────
