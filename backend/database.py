@@ -57,6 +57,7 @@ class Position(Base):
     unrealized_pnl_pct: Mapped[float] = mapped_column(Float, default=0.0)
     realized_pnl_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     realized_pnl_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fees_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     peak_profit_pct: Mapped[float] = mapped_column(Float, default=0.0)
     zone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     signal_strength: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)

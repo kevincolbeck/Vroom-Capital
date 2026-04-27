@@ -445,7 +445,9 @@ class BotEngine:
             await db.commit()
 
     async def _update_bot_stats(self, db, position: Position):
-        pnl = position.realized_pnl_usd or 0
+        gross_pnl = position.realized_pnl_usd or 0
+        fees = position.fees_usd if position.fees_usd is not None else (position.position_size_usd or 0) * 0.0012
+        pnl = gross_pnl - fees  # track net PnL after fees
         is_win = pnl > 0
         await db.execute(
             update(BotState).where(BotState.id == 1).values(

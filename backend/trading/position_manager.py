@@ -190,14 +190,51 @@ class PositionManager:
         position.closed_at = datetime.utcnow()
 
         await self.db.commit()
+
+        # Reconcile with actual Bitunix position history (exact prices, PnL, fees)
+        import asyncio as _asyncio
+        try:
+            await _asyncio.sleep(3)
+            history = await self.client.get_history_positions(limit=5)
+            if history:
+                h = history[0]  # most recent closed position
+                close_price  = float(h.get("closePrice") or h.get("avgClosePrice") or 0)
+                entry_price  = float(h.get("entryPrice") or h.get("avgOpenPrice") or 0)
+                realized_pnl = float(h.get("realizedPNL") or h.get("realizedPnl") or h.get("pnl") or 0)
+                fees         = float(h.get("fee") or h.get("tradeFee") or 0)
+
+                if close_price > 0:
+                    position.exit_price = close_price
+                    logger.info(f"Reconciled exit price from exchange: ${close_price:,.2f} (was ${current_price:,.2f})")
+                if entry_price > 0 and abs(entry_price - position.entry_price) > 1:
+                    position.entry_price = entry_price
+                    logger.info(f"Reconciled entry price from exchange: ${entry_price:,.2f}")
+                if realized_pnl != 0:
+                    # Bitunix realizedPNL excludes fees — store gross, fees separate
+                    position.realized_pnl_usd = realized_pnl
+                    margin = position.margin_used_usd or 1
+                    position.realized_pnl_pct = round(realized_pnl / margin * 100, 2)
+                if fees != 0:
+                    position.fees_usd = abs(fees)
+
+                await self.db.commit()
+                logger.info(
+                    f"Exchange reconcile — exit=${close_price:,.2f}, "
+                    f"PnL=${realized_pnl:+.4f}, fees=${abs(fees):.4f}"
+                )
+        except Exception as e:
+            logger.warning(f"Could not reconcile with exchange history: {e}")
+
         await self.db.refresh(position)
 
-        emoji = "✅" if pnl["pnl_pct"] > 0 else "❌"
+        fees_str = f" | Fees: -${abs(position.fees_usd):.4f}" if position.fees_usd else ""
+        net_pnl = (position.realized_pnl_usd or 0) - (position.fees_usd or 0)
+        emoji = "✅" if net_pnl > 0 else "❌"
         await self._log(
             "INFO", "POSITION",
-            f"{emoji} Closed {position.side} @ ${current_price:,.0f} | "
-            f"PnL: {pnl['pnl_pct']:+.1f}% (${pnl['pnl_usd']:+.2f}) | "
-            f"Reason: {reason}"
+            f"{emoji} Closed {position.side} @ ${position.exit_price:,.2f} | "
+            f"Gross: ${position.realized_pnl_usd:+.4f}{fees_str} | "
+            f"Net: ${net_pnl:+.4f} | Reason: {reason}"
         )
 
         return position

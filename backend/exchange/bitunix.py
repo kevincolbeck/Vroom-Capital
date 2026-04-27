@@ -276,6 +276,24 @@ class BitunixClient:
             logger.error(f"Failed to get positions: {e}")
             return []
 
+    async def get_history_positions(self, limit: int = 5) -> List[Dict]:
+        """Fetch recently closed positions with actual PnL, fees, and prices from exchange."""
+        if not self.api_key:
+            return []
+        path = "/api/v1/futures/position/get_history_positions"
+        try:
+            data = await self._get_signed(path, {"symbol": self.symbol, "limit": limit})
+            if isinstance(data, dict) and data.get("code") == 0:
+                inner = data.get("data") or {}
+                if isinstance(inner, list):
+                    return inner
+                return inner.get("resultList") or inner.get("list") or []
+            logger.warning(f"get_history_positions returned: {data}")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get position history: {e}")
+            return []
+
     async def place_order(
         self,
         side: str,

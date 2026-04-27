@@ -280,12 +280,16 @@ async def get_positions(
 
         pnl_usd = round((p.margin_used_usd or 0) * pnl_pct / 100, 2)
 
-        # Bitunix taker fee: 0.06% per side = 0.12% round-trip on notional
-        fees_usd = round((p.position_size_usd or 0) * 0.0012, 2)
-        if p.status == PositionStatus.OPEN:
-            net_pnl_usd = round(pnl_usd - fees_usd, 2)
+        # Use actual fees from exchange reconciliation when available;
+        # fall back to estimated 0.12% round-trip of notional
+        if p.fees_usd is not None:
+            fees_usd = round(p.fees_usd, 4)
         else:
-            net_pnl_usd = round((p.realized_pnl_usd or 0) - fees_usd, 2)
+            fees_usd = round((p.position_size_usd or 0) * 0.0012, 4)
+        if p.status == PositionStatus.OPEN:
+            net_pnl_usd = round(pnl_usd - fees_usd, 4)
+        else:
+            net_pnl_usd = round((p.realized_pnl_usd or 0) - fees_usd, 4)
 
         data.append({
             "id": p.id,
