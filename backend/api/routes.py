@@ -254,21 +254,45 @@ async def get_positions(
     result = await db.execute(query)
     positions = result.scalars().all()
 
+    # Fetch live price once so open-position P&L is always fresh
+    live_price: Optional[float] = None
+    try:
+        client = get_bitunix_client()
+        ticker = await client.get_ticker()
+        live_price = ticker.get("price")
+    except Exception:
+        pass
+
     data = []
     for p in positions:
+        # For open positions recompute P&L from live price; fall back to DB value
+        if p.status == PositionStatus.OPEN and live_price:
+            lev = p.leverage or settings.leverage
+            if p.side == "LONG":
+                pnl_pct = (live_price - p.entry_price) / p.entry_price * lev * 100
+            else:
+                pnl_pct = (p.entry_price - live_price) / p.entry_price * lev * 100
+            pnl_pct = round(pnl_pct, 2)
+            current_price = live_price
+        else:
+            pnl_pct = p.unrealized_pnl_pct
+            current_price = p.current_price
+
+        pnl_usd = round((p.margin_used_usd or 0) * pnl_pct / 100, 2)
+
         data.append({
             "id": p.id,
             "side": p.side,
             "status": p.status,
             "entry_price": p.entry_price,
-            "current_price": p.current_price,
+            "current_price": current_price,
             "exit_price": p.exit_price,
             "position_size_usd": p.position_size_usd,
             "margin_used_usd": p.margin_used_usd,
             "leverage": p.leverage,
             "liquidation_price": p.liquidation_price,
-            "unrealized_pnl_pct": p.unrealized_pnl_pct,
-            "unrealized_pnl_usd": round(p.margin_used_usd * p.unrealized_pnl_pct / 100, 2),
+            "unrealized_pnl_pct": pnl_pct,
+            "unrealized_pnl_usd": pnl_usd,
             "realized_pnl_pct": p.realized_pnl_pct,
             "realized_pnl_usd": p.realized_pnl_usd,
             "peak_profit_pct": p.peak_profit_pct,
