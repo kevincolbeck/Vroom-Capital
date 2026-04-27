@@ -19,7 +19,8 @@ from sqlalchemy import select, update, delete
 
 class BotEngine:
 
-    LOOP_INTERVAL_SECONDS = 60   # Check every 60 seconds
+    LOOP_INTERVAL_SECONDS = 60      # Signal scan when flat
+    POSITION_POLL_SECONDS = 10      # Exit check when in a position
 
     def __init__(self):
         self.signal_engine = SignalEngine()
@@ -85,21 +86,91 @@ class BotEngine:
     # ─────────────────────────────────────────────────────────────────
 
     async def _main_loop(self):
-        """Main bot loop — runs every 60 seconds."""
+        """Main bot loop.
+
+        When flat: full tick (signal scan + candles) every 60s.
+        When in a position: lightweight price+exit check every 10s,
+        full tick every 60s for signal refresh.
+        """
+        last_full_tick = 0.0
         while self._running:
             try:
-                await self._tick()
+                import time
+                now = time.monotonic()
+                has_open = await self._has_open_position()
+
+                if has_open:
+                    # Fast exit check — only ticker + exit logic, no candle fetch
+                    await self._position_tick()
+                    # Full tick (candles + signal) every 60s even when in position
+                    if now - last_full_tick >= self.LOOP_INTERVAL_SECONDS:
+                        await self._tick()
+                        last_full_tick = time.monotonic()
+                    await asyncio.sleep(self.POSITION_POLL_SECONDS)
+                else:
+                    await self._tick()
+                    last_full_tick = time.monotonic()
+                    await asyncio.sleep(self.LOOP_INTERVAL_SECONDS)
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.exception(f"Bot loop error: {e}")
                 await self._set_status(BotStatus.ERROR)
                 await self._log("ERROR", "BOT", f"Bot loop error: {e}", details=str(e))
-                await asyncio.sleep(30)  # Wait before retry
+                await asyncio.sleep(30)
                 await self._set_status(BotStatus.RUNNING)
                 continue
 
-            await asyncio.sleep(self.LOOP_INTERVAL_SECONDS)
+    async def _has_open_position(self) -> bool:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Position).where(Position.status == PositionStatus.OPEN).limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
+    async def _position_tick(self):
+        """Lightweight tick — just fetch price and check exits. No candle fetch."""
+        client = get_bitunix_client()
+        async with AsyncSessionLocal() as db:
+            pos_manager = PositionManager(client, db)
+
+            try:
+                ticker = await client.get_ticker()
+                current_price = ticker["price"]
+            except Exception:
+                return
+
+            open_positions = await pos_manager.get_open_positions()
+            if not open_positions:
+                return
+
+            # Need HA candles for exit signal — fetch only if we have positions
+            try:
+                candles_1h_raw = await client.get_klines("1h", limit=50)
+                candles_6h_raw = await client.get_klines("6h", limit=20)
+                ha_1h = compute_heikin_ashi(candles_1h_raw[-50:])
+                ha_6h = compute_heikin_ashi(candles_6h_raw[-20:])
+            except Exception:
+                return
+
+            copy_manager = CopyTradingManager(db)
+            for position in open_positions:
+                position = await pos_manager.update_position(position, current_price)
+
+                if not self._manual_override:
+                    should_exit, exit_reason = self.signal_engine.get_exit_signal(
+                        position_side=position.side,
+                        entry_price=position.entry_price,
+                        current_price=current_price,
+                        peak_profit_pct=position.peak_profit_pct,
+                        candles_1h_ha=ha_1h,
+                        candles_6h_ha=ha_6h,
+                    )
+                    if should_exit:
+                        await pos_manager.close_position(position, current_price, exit_reason)
+                        await copy_manager.close_copy_positions(position, exit_reason)
+                        await self._update_bot_stats(db, position)
 
     async def _tick(self):
         """Single tick of the bot loop."""
