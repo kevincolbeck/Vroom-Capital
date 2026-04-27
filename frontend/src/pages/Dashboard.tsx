@@ -113,12 +113,11 @@ function SignalIndicator({ signal }: { signal: any }) {
 
 function PositionCard({ position }: { position: any }) {
   const isLong = position.side === 'LONG'
-  const pnl = position.unrealized_pnl_pct || 0
-  const pnlColor = pnl > 0 ? 'text-profit' : 'text-loss'
+  const pnlPct = position.unrealized_pnl_pct || 0
+  const pnlUsd = position.unrealized_pnl_usd ?? (position.margin_used_usd * pnlPct / 100)
+  const pnlColor = pnlPct > 0 ? 'text-profit' : pnlPct < 0 ? 'text-loss' : 'text-gray-400'
 
   const leverage = position.leverage || 75
-  // TP prices based on actual exit trigger: pnl_pct = (move/entry) * leverage * 100 >= tp_pct*100
-  // => move = entry * tp_pct / leverage
   const tp1Move = position.entry_price * 0.20 / leverage
   const tp2Move = position.entry_price * 0.30 / leverage
   const tp1 = isLong ? position.entry_price + tp1Move : position.entry_price - tp1Move
@@ -131,10 +130,9 @@ function PositionCard({ position }: { position: any }) {
 
   return (
     <div className={clsx('p-4 rounded-xl border-2 transition-all',
-      isLong
-        ? 'border-profit/30 bg-profit/5'
-        : 'border-loss/30 bg-loss/5'
+      isLong ? 'border-profit/30 bg-profit/5' : 'border-loss/30 bg-loss/5'
     )}>
+      {/* Header — direction + P&L */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           {isLong
@@ -145,11 +143,17 @@ function PositionCard({ position }: { position: any }) {
             {position.side} {position.leverage}x
           </span>
         </div>
-        <span className={clsx('text-lg font-bold font-mono', pnlColor)}>
-          {formatPct(pnl)}
-        </span>
+        <div className="text-right">
+          <div className={clsx('text-lg font-bold font-mono', pnlColor)}>
+            {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+          </div>
+          <div className={clsx('text-xs font-mono', pnlColor)}>
+            {pnlUsd >= 0 ? '+' : ''}{formatUsd(pnlUsd)}
+          </div>
+        </div>
       </div>
 
+      {/* Price grid */}
       <div className="grid grid-cols-2 gap-2 text-xs mb-3">
         <div>
           <div className="text-gray-500">Entry</div>
@@ -164,22 +168,29 @@ function PositionCard({ position }: { position: any }) {
           <div className="font-mono text-loss">{formatPrice(position.liquidation_price)}</div>
         </div>
         <div>
-          <div className="text-gray-500">Peak</div>
-          <div className="font-mono text-brand">{formatPct(position.peak_profit_pct)}</div>
+          <div className="text-gray-500">Peak P&L</div>
+          <div className="font-mono text-brand">+{(position.peak_profit_pct || 0).toFixed(1)}%</div>
+        </div>
+        <div>
+          <div className="text-gray-500">Margin</div>
+          <div className="font-mono text-gray-300">{formatUsd(position.margin_used_usd)}</div>
+        </div>
+        <div>
+          <div className="text-gray-500">Notional</div>
+          <div className="font-mono text-gray-300">{formatUsd(position.position_size_usd)}</div>
         </div>
       </div>
 
       {/* TP Levels */}
       <div className="border-t border-white/10 pt-2.5 space-y-1.5">
-        <div className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1.5">Take Profit Targets</div>
+        <div className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1.5">Exit Targets</div>
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-400 flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-brand inline-block" />
-            TP1 <span className="text-gray-600">(20% — trailing activates)</span>
+            Trail activates <span className="text-gray-600">(20% P&L)</span>
           </span>
           <span className="font-mono text-brand font-medium">{formatPrice(tp1)}</span>
         </div>
-        {/* Progress bar to TP1 */}
         <div className="w-full h-1 bg-dark-600 rounded-full overflow-hidden">
           <div
             className="h-full bg-brand rounded-full transition-all"
@@ -189,7 +200,7 @@ function PositionCard({ position }: { position: any }) {
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-400 flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-profit inline-block" />
-            TP2 <span className="text-gray-600">(30%)</span>
+            Wide trail <span className="text-gray-600">(30% P&L)</span>
           </span>
           <span className="font-mono text-profit font-medium">{formatPrice(tp2)}</span>
         </div>
@@ -445,8 +456,8 @@ export default function Dashboard() {
               <div className="text-gray-500 font-medium uppercase tracking-wide mb-2">Strategy</div>
               {[
                 ['Leverage', '75x Cross'],
-                ['Position Size', '$4,500 liq buffer'],
-                ['Liq Buffer', '$4,500'],
+                ['Position Size', '$3,250 liq buffer'],
+                ['Liq Buffer', '$3,250'],
                 ['TP1 / TP2', '20% / 30%'],
                 ['Exit', 'Trailing stop + HA reversal'],
               ].map(([k, v]) => (

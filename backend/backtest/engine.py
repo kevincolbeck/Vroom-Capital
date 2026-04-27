@@ -166,7 +166,7 @@ class BacktestEngine:
             from datetime import datetime, timezone
 
             start_dt = datetime(self.config.start_year, 1, 1, tzinfo=timezone.utc)
-            end_dt = datetime(min(self.config.end_year + 1, 2026), 1, 1, tzinfo=timezone.utc)
+            end_dt = datetime(self.config.end_year + 1, 1, 1, tzinfo=timezone.utc)
 
             def kline_progress(pct, msg):
                 _progress(pct * 0.30, msg)

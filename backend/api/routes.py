@@ -268,6 +268,7 @@ async def get_positions(
             "leverage": p.leverage,
             "liquidation_price": p.liquidation_price,
             "unrealized_pnl_pct": p.unrealized_pnl_pct,
+            "unrealized_pnl_usd": round(p.margin_used_usd * p.unrealized_pnl_pct / 100, 2),
             "realized_pnl_pct": p.realized_pnl_pct,
             "realized_pnl_usd": p.realized_pnl_usd,
             "peak_profit_pct": p.peak_profit_pct,
