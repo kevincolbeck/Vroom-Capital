@@ -156,14 +156,27 @@ class PositionManager:
             leverage=position.leverage,
         )
 
-        # Close on exchange
+        # Close on exchange — use actual qty from exchange, not our computed value
+        exchange_closed = False
         try:
-            await self.client.close_position(
-                side=position.side,
-                quantity=position.position_size_usd / current_price,
-            )
+            ex_positions = await self.client.get_open_positions()
+            qty = None
+            for ep in (ex_positions or []):
+                raw_qty = ep.get("size") or ep.get("qty") or ep.get("quantity") or ep.get("positionAmt")
+                if raw_qty:
+                    qty = abs(float(raw_qty))
+                    break
+            if not qty or qty < 0.0001:
+                # Fall back to our computed quantity
+                qty = position.position_size_usd / current_price
+            result = await self.client.close_position(side=position.side, quantity=qty)
+            logger.info(f"Exchange close result: {result}")
+            exchange_closed = True
         except Exception as e:
             await self._log("ERROR", "POSITION", f"Failed to close position on exchange: {e}")
+
+        if not exchange_closed:
+            await self._log("WARNING", "POSITION", "Exchange close may have failed — DB marked closed anyway")
 
         position.exit_price = current_price
         position.realized_pnl_pct = pnl["pnl_pct"]

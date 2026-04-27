@@ -292,14 +292,28 @@ class BotEngine:
             pos_manager = PositionManager(client, db)
             copy_manager = CopyTradingManager(db)
 
-            open_positions = await pos_manager.get_open_positions()
-
             try:
                 ticker = await client.get_ticker()
                 current_price = ticker["price"]
             except Exception:
                 current_price = 0
 
+            # Step 1: close via exchange positions directly (most reliable)
+            try:
+                ex_positions = await client.get_open_positions()
+                for ep in (ex_positions or []):
+                    raw_qty = ep.get("size") or ep.get("qty") or ep.get("quantity") or ep.get("positionAmt")
+                    side = ep.get("side", "LONG")
+                    if raw_qty:
+                        qty = abs(float(raw_qty))
+                        if qty >= 0.0001:
+                            result = await client.close_position(side=side, quantity=qty)
+                            logger.info(f"Emergency exchange close: {side} {qty} → {result}")
+            except Exception as e:
+                logger.error(f"Emergency exchange close failed: {e}")
+
+            # Step 2: mark all open DB positions closed
+            open_positions = await pos_manager.get_open_positions()
             for position in open_positions:
                 await pos_manager.close_position(
                     position, current_price, reason,
