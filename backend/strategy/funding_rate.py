@@ -1,7 +1,11 @@
 """
 Funding Rate Monitor
-Fetches Bitunix's own funding rate and generates sentiment signals.
+Tracks BTC funding rates across Binance, OKX, Deribit, and Bitunix.
+
+When all exchanges agree the rate is extreme, that's the strongest signal.
+Mixed readings dampen the average and reduce conviction.
 """
+import asyncio
 import httpx
 from typing import Dict, Optional, Tuple
 from loguru import logger
@@ -9,20 +13,68 @@ from loguru import logger
 
 class FundingRateMonitor:
 
-    EXTREME_POSITIVE = 0.001   # 0.1%
-    ELEVATED_POSITIVE = 0.0005 # 0.05%
-    EXTREME_NEGATIVE = -0.0005 # -0.05%
-
-    BITUNIX_URL = "https://fapi.bitunix.com/api/v1/futures/market/funding_rate"
+    EXTREME_POSITIVE = 0.001   # 0.1%  — longs overcrowded, expect dump
+    ELEVATED_POSITIVE = 0.0005 # 0.05% — longs crowded
+    EXTREME_NEGATIVE = -0.0005 # -0.05% — shorts overcrowded, expect pump
 
     def __init__(self):
         self._cache: Dict[str, Optional[float]] = {}
 
-    async def fetch_bitunix_funding(self) -> Optional[float]:
-        """Fetch BTCUSDT funding rate directly from Bitunix (public endpoint)."""
+    async def fetch_binance_funding(self) -> Optional[float]:
+        """Binance — largest volume, most liquid perpetual market."""
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(self.BITUNIX_URL, params={"symbol": "BTCUSDT"})
+                resp = await client.get(
+                    "https://fapi.binance.com/fapi/v1/premiumIndex",
+                    params={"symbol": "BTCUSDT"}
+                )
+                d = resp.json()
+                return float(d["lastFundingRate"])
+        except Exception as e:
+            logger.debug(f"Binance funding fetch failed: {e}")
+            return None
+
+    async def fetch_okx_funding(self) -> Optional[float]:
+        """OKX — high volume, reliable signal."""
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://www.okx.com/api/v5/public/funding-rate",
+                    params={"instId": "BTC-USDT-SWAP"}
+                )
+                d = resp.json()
+                data = d.get("data", [])
+                if data:
+                    return float(data[0]["fundingRate"])
+        except Exception as e:
+            logger.debug(f"OKX funding fetch failed: {e}")
+        return None
+
+    async def fetch_deribit_funding(self) -> Optional[float]:
+        """Deribit — often leads other exchanges, sophisticated trader base."""
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://www.deribit.com/api/v2/public/ticker",
+                    params={"instrument_name": "BTC-PERPETUAL"}
+                )
+                d = resp.json()
+                result = d.get("result") or {}
+                rate = result.get("current_funding")
+                if rate is not None:
+                    return float(rate)
+        except Exception as e:
+            logger.debug(f"Deribit funding fetch failed: {e}")
+        return None
+
+    async def fetch_bitunix_funding(self) -> Optional[float]:
+        """Bitunix — the exchange we actually trade and pay funding on."""
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://fapi.bitunix.com/api/v1/futures/market/funding_rate",
+                    params={"symbol": "BTCUSDT"}
+                )
                 d = resp.json()
                 data = d.get("data") or {}
                 rate = data.get("fundingRate")
@@ -33,9 +85,25 @@ class FundingRateMonitor:
         return None
 
     async def fetch_all(self) -> Dict[str, Optional[float]]:
-        """Fetch funding rate from Bitunix."""
-        rate = await self.fetch_bitunix_funding()
-        rates = {"bitunix": rate}
+        """Fetch funding rates from all exchanges concurrently.
+
+        All positive  → strong crowd consensus (bearish contrarian signal)
+        All negative  → strong crowd consensus (bullish contrarian signal)
+        Mixed         → no clear signal, average dampened
+        """
+        results = await asyncio.gather(
+            self.fetch_binance_funding(),
+            self.fetch_okx_funding(),
+            self.fetch_deribit_funding(),
+            self.fetch_bitunix_funding(),
+            return_exceptions=True,
+        )
+        rates = {
+            "binance": results[0] if not isinstance(results[0], Exception) else None,
+            "okx":     results[1] if not isinstance(results[1], Exception) else None,
+            "deribit": results[2] if not isinstance(results[2], Exception) else None,
+            "bitunix": results[3] if not isinstance(results[3], Exception) else None,
+        }
         self._cache = rates
         return rates
 
