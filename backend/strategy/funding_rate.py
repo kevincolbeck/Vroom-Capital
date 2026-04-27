@@ -1,10 +1,9 @@
 """
 Funding Rate Monitor
-Tracks funding rates across multiple exchanges and generates sentiment signals.
+Fetches Bitunix's own funding rate and generates sentiment signals.
 """
-import asyncio
 import httpx
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, Tuple
 from loguru import logger
 
 
@@ -14,69 +13,29 @@ class FundingRateMonitor:
     ELEVATED_POSITIVE = 0.0005 # 0.05%
     EXTREME_NEGATIVE = -0.0005 # -0.05%
 
+    BITUNIX_URL = "https://fapi.bitunix.com/api/v1/futures/market/funding_rate"
+
     def __init__(self):
-        self._cache: Dict[str, float] = {}
-        self._last_update: Optional[float] = None
+        self._cache: Dict[str, Optional[float]] = {}
 
-    async def fetch_binance_funding(self) -> Optional[float]:
-        """Fetch BTC-USDT funding rate from Binance Futures."""
+    async def fetch_bitunix_funding(self) -> Optional[float]:
+        """Fetch BTCUSDT funding rate directly from Bitunix (public endpoint)."""
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(
-                    "https://fapi.binance.com/fapi/v1/premiumIndex",
-                    params={"symbol": "BTCUSDT"}
-                )
+                resp = await client.get(self.BITUNIX_URL, params={"symbol": "BTCUSDT"})
                 d = resp.json()
-                return float(d["lastFundingRate"])
+                data = d.get("data") or {}
+                rate = data.get("fundingRate")
+                if rate is not None:
+                    return float(rate)
         except Exception as e:
-            logger.debug(f"Binance funding fetch failed: {e}")
-            return None
-
-    async def fetch_okx_funding(self) -> Optional[float]:
-        """Fetch BTC funding rate from OKX."""
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(
-                    "https://www.okx.com/api/v5/public/funding-rate",
-                    params={"instId": "BTC-USDT-SWAP"}
-                )
-                d = resp.json()
-                data = d.get("data", [])
-                if data:
-                    return float(data[0]["fundingRate"])
-        except Exception as e:
-            logger.debug(f"OKX funding fetch failed: {e}")
-        return None
-
-    async def fetch_bybit_funding(self) -> Optional[float]:
-        """Fetch BTC funding rate from Bybit."""
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(
-                    "https://api.bybit.com/v5/market/funding/history",
-                    params={"category": "linear", "symbol": "BTCUSDT", "limit": "1"}
-                )
-                d = resp.json()
-                data = d.get("result", {}).get("list", [])
-                if data:
-                    return float(data[0]["fundingRate"])
-        except Exception as e:
-            logger.debug(f"Bybit funding fetch failed: {e}")
+            logger.debug(f"Bitunix funding fetch failed: {e}")
         return None
 
     async def fetch_all(self) -> Dict[str, Optional[float]]:
-        """Fetch funding rates from all exchanges concurrently."""
-        results = await asyncio.gather(
-            self.fetch_binance_funding(),
-            self.fetch_okx_funding(),
-            self.fetch_bybit_funding(),
-            return_exceptions=True
-        )
-        rates = {
-            "binance": results[0] if not isinstance(results[0], Exception) else None,
-            "okx": results[1] if not isinstance(results[1], Exception) else None,
-            "bybit": results[2] if not isinstance(results[2], Exception) else None,
-        }
+        """Fetch funding rate from Bitunix."""
+        rate = await self.fetch_bitunix_funding()
+        rates = {"bitunix": rate}
         self._cache = rates
         return rates
 

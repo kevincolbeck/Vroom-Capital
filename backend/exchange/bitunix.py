@@ -194,12 +194,16 @@ class BitunixClient:
             return {"price": 0.0, "mark_price": 0.0, "index_price": 0.0, "funding_rate": 0.0}
 
     async def get_funding_rate(self) -> float:
-        """Get current funding rate."""
+        """Get current BTCUSDT funding rate from Bitunix (public endpoint)."""
         try:
-            ticker = await self.get_ticker()
-            return ticker.get("funding_rate", 0.0)
-        except Exception:
-            return 0.0
+            data = await self._get("/api/v1/futures/market/funding_rate", {"symbol": self.symbol})
+            inner = data.get("data") or {}
+            rate = inner.get("fundingRate")
+            if rate is not None:
+                return float(rate)
+        except Exception as e:
+            logger.debug(f"Bitunix funding rate fetch failed: {e}")
+        return 0.0
 
     async def get_copy_trading_aum(self) -> float:
         """
