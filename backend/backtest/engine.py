@@ -50,6 +50,10 @@ class BacktestConfig:
     # Funding extremes (block trade)
     funding_extreme_positive: float = 0.001   # 0.1%
     funding_extreme_negative: float = -0.0005  # -0.05%
+    # Trailing stop — must match live config defaults
+    trailing_peak_threshold_pct: float = 25.0   # above this peak, use wide trail
+    trailing_after_tp1_peak_low_pct: float = 1.0  # trail % when peak < 25%
+    trailing_after_tp1_peak_high_pct: float = 5.0  # trail % when peak >= 25%
 
 
 @dataclass
@@ -303,7 +307,7 @@ class BacktestEngine:
 
                     liq_buffer = abs(close_price - liq_price)
 
-                    if margin < capital * 0.01:  # sanity: at least 1% of capital
+                    if margin < 5.0:  # sanity: need at least $5 margin
                         _block(block_stats, "margin_too_small")
                     else:
                         trade_counter += 1
@@ -539,16 +543,21 @@ class BacktestEngine:
     ) -> Tuple[SimTrade, float, bool]:
         """
         Update an open position. Returns (trade, capital, was_closed).
+        Exit logic mirrors the live signal_engine.get_exit_signal() exactly:
+        - P&L is leverage-adjusted %: pnl_pct = (price_delta / entry) * leverage * 100
+        - TP1 at 20% P&L — then trail at -1% from peak (or -5% if peak >= 25%)
+        - Emergency close: 4 consecutive opposing 1H HA candles
+        - 6H HA reversal
         """
         cfg = self.config
         high = candle["high"]
         low = candle["low"]
         close = candle["close"]
         ts_ms = candle["open_time"]
+        entry = trade.entry_price
+        lev = cfg.leverage
 
-        qty = trade.position_size_usd / trade.entry_price
-
-        # ─── Liquidation check (use high/low, not just close) ──────
+        # ─── 1. Liquidation check (intra-candle high/low) ─────────
         if trade.direction == "LONG" and low <= trade.liquidation_price:
             self._close_trade(trade, trade.liquidation_price, ts_ms, "Liquidated")
             trade.status = "LIQUIDATED"
@@ -561,48 +570,45 @@ class BacktestEngine:
             capital += trade.realized_pnl_usd
             return trade, capital, True
 
-        # ─── Dollar-based trailing stop ────────────────────────────
-        # TP thresholds are % of the liquidation buffer (e.g. 20% of $4500 = $900)
-        buffer       = cfg.liquidation_buffer_usd
-        tp1_dollar   = buffer * cfg.tp1_pct          # e.g. $900
-        tp2_dollar   = buffer * cfg.tp2_pct          # e.g. $1,350
-        trail_tight  = buffer * 0.05                 # $225 trail before TP2
-        trail_wide   = buffer * 0.10                 # $450 trail after TP2
-
-        # Track peak favorable move using intra-candle high/low
-        # peak_profit_pct repurposed: stores peak favorable $ move from entry
+        # ─── 2. Leverage-adjusted P&L % ───────────────────────────
         if trade.direction == "LONG":
-            intra_best = high - trade.entry_price
+            current_pnl_pct = (close - entry) / entry * 100.0 * lev
+            intra_best_pnl  = (high  - entry) / entry * 100.0 * lev
         else:
-            intra_best = trade.entry_price - low
+            current_pnl_pct = (entry - close) / entry * 100.0 * lev
+            intra_best_pnl  = (entry - low)   / entry * 100.0 * lev
 
-        if intra_best > trade.peak_profit_pct:
-            trade.peak_profit_pct = intra_best
+        # Update peak (using intra-candle best price, same as live system)
+        if intra_best_pnl > trade.peak_profit_pct:
+            trade.peak_profit_pct = intra_best_pnl
 
-        peak_move = trade.peak_profit_pct  # peak favorable $ move
+        peak_pnl = trade.peak_profit_pct
 
-        if peak_move >= tp1_dollar:
-            trail_dist  = trail_wide if peak_move >= tp2_dollar else trail_tight
-            peak_price  = (trade.entry_price + peak_move if trade.direction == "LONG"
-                           else trade.entry_price - peak_move)
-            trail_price = (peak_price - trail_dist if trade.direction == "LONG"
-                           else peak_price + trail_dist)
+        # ─── 3. TP1 trailing stop (matches live get_exit_signal) ──
+        tp1_pct = cfg.tp1_pct * 100  # 20.0
 
-            # Exit if candle low/high breaches the trail stop price
-            if trade.direction == "LONG" and low <= trail_price:
-                exit_px = max(trail_price, low)   # best realistic fill within candle
+        if peak_pnl >= tp1_pct:
+            trail_pct = (cfg.trailing_after_tp1_peak_high_pct
+                         if peak_pnl >= cfg.trailing_peak_threshold_pct
+                         else cfg.trailing_after_tp1_peak_low_pct)
+
+            drawdown = peak_pnl - current_pnl_pct
+            if drawdown >= trail_pct:
+                # Convert trail stop P&L back to a price for realistic fill
+                trail_stop_pnl = peak_pnl - trail_pct
+                if trade.direction == "LONG":
+                    trail_price = entry * (1 + trail_stop_pnl / (100.0 * lev))
+                    exit_px = max(trail_price, low)
+                else:
+                    trail_price = entry * (1 - trail_stop_pnl / (100.0 * lev))
+                    exit_px = min(trail_price, high)
                 self._close_trade(trade, exit_px, ts_ms,
-                    f"Trail stop: peak+${peak_move:.0f} trail=${trail_dist:.0f}")
+                    f"Trailing stop: peak={peak_pnl:.1f}% current={current_pnl_pct:.1f}% "
+                    f"drawdown={drawdown:.1f}% > trail={trail_pct}%")
                 capital += trade.realized_pnl_usd
                 return trade, capital, True
-            elif trade.direction == "SHORT" and high >= trail_price:
-                exit_px = min(trail_price, high)
-                self._close_trade(trade, exit_px, ts_ms,
-                    f"Trail stop: peak+${peak_move:.0f} trail=${trail_dist:.0f}")
-                capital += trade.realized_pnl_usd
-                return trade, capital, True
 
-        # ─── 4-candle emergency close ──────────────────────────────
+        # ─── 4. 4-candle emergency close ──────────────────────────
         ha_1h = compute_heikin_ashi(buf_1h[-20:])
         consecutive = count_consecutive_opposite(ha_1h, trade.direction)
         if consecutive >= cfg.emergency_candles:
@@ -611,7 +617,7 @@ class BacktestEngine:
             capital += trade.realized_pnl_usd
             return trade, capital, True
 
-        # ─── 6H reversal check ────────────────────────────────────
+        # ─── 5. 6H reversal check ─────────────────────────────────
         ha_6h = compute_heikin_ashi(buf_6h[-10:])
         if detect_reversal(ha_6h, trade.direction):
             self._close_trade(trade, close, ts_ms, "6H HA reversal detected")

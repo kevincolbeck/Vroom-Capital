@@ -42,12 +42,12 @@ def fmt(n, prefix="$", decimals=2):
 
 async def main():
     print("\n" + "=" * 60)
-    print("  VROOM CAPITAL — 2-YEAR BACKTEST (2023–2024)")
+    print("  VROOM CAPITAL — 5-YEAR BACKTEST (2020–2024)")
     print("  Strategy: 75x cross | $4,500 liq buffer")
     print("=" * 60 + "\n")
 
     config = BacktestConfig(
-        start_year=2023,
+        start_year=2020,
         end_year=2024,
         initial_capital=10000.0,
         leverage=75,
