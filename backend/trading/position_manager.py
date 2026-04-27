@@ -68,13 +68,28 @@ class PositionManager:
         data = order_result.get("data") or {}
         order_id = str(order_result.get("orderId") or data.get("orderId") or data.get("orderID") or "unknown")
 
+        # Fetch actual fill price from exchange (avoids CryptoCompare fallback price mismatch)
+        import asyncio as _asyncio
+        fill_price = current_price
+        try:
+            await _asyncio.sleep(2)  # give exchange time to register the position
+            ex_positions = await self.client.get_open_positions()
+            if ex_positions:
+                p = ex_positions[0]
+                raw = p.get("openPrice") or p.get("avgOpenPrice") or p.get("entryPrice") or p.get("avgPrice")
+                if raw:
+                    fill_price = float(raw)
+                    logger.info(f"Actual fill price from exchange: ${fill_price:,.2f} (ticker was ${current_price:,.2f})")
+        except Exception as e:
+            logger.warning(f"Could not fetch fill price from exchange, using ticker: {e}")
+
         # Create DB record
         position = Position(
             exchange_order_id=order_id,
             side=direction,
             status=PositionStatus.OPEN,
-            entry_price=current_price,
-            current_price=current_price,
+            entry_price=fill_price,
+            current_price=fill_price,
             position_size_usd=pos_params["position_size_usd"],
             margin_used_usd=pos_params["margin_usd"],
             leverage=pos_params["leverage"],
@@ -96,7 +111,7 @@ class PositionManager:
 
         await self._log(
             "INFO", "POSITION",
-            f"Opened {direction} @ ${current_price:,.0f} | "
+            f"Opened {direction} @ ${fill_price:,.2f} | "
             f"Size: ${pos_params['margin_usd']:.0f} margin | "
             f"Liq: ${pos_params['liquidation_price']:,.0f} | "
             f"Order: {order_id}",
