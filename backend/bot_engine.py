@@ -7,14 +7,14 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from loguru import logger
 
-from backend.database import AsyncSessionLocal, BotState, BotStatus, Position, PositionStatus, BotLog
+from backend.database import AsyncSessionLocal, BotState, BotStatus, Position, PositionStatus, BotLog, ZoneMemory
 from backend.exchange.bitunix import get_bitunix_client
 from backend.strategy.signal_engine import SignalEngine, TradeSignal
 from backend.strategy.heikin_ashi import compute_heikin_ashi
 from backend.trading.position_manager import PositionManager
 from backend.copy_trading.manager import CopyTradingManager
 from backend.config import settings
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 
 
 class BotEngine:
@@ -41,6 +41,7 @@ class BotEngine:
             return
         self._running = True
         self._paused = False
+        await self._load_zone_state()
         self._task = asyncio.create_task(self._main_loop())
         await self._set_status(BotStatus.RUNNING)
         await self._log("INFO", "BOT", "Bot engine started")
@@ -187,8 +188,10 @@ class BotEngine:
                                 size_modifier=signal.position_size_modifier,
                             )
 
-                            if new_position and settings.copy_trading_enabled:
-                                await copy_manager.open_copy_positions(new_position, signal.to_dict())
+                            if new_position:
+                                await self._save_zone_state(db)
+                                if settings.copy_trading_enabled:
+                                    await copy_manager.open_copy_positions(new_position, signal.to_dict())
                         else:
                             await self._log("WARNING", "RISK",
                                 f"Insufficient balance: ${account_balance:.2f} — skipping signal")
@@ -309,6 +312,46 @@ class BotEngine:
             )
         )
         await db.commit()
+
+    async def _load_zone_state(self):
+        """Restore zone cooldowns from DB into the in-memory zone tracker on startup."""
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(ZoneMemory))
+                rows = result.scalars().all()
+                loaded = 0
+                for row in rows:
+                    if row.cooldown_until and row.cooldown_until > datetime.utcnow():
+                        zt = self.signal_engine.zone_tracker
+                        state = zt.get_state(row.zone_key)
+                        state[row.direction] = {
+                            "count": row.signal_count,
+                            "last_signal": row.last_signal_at,
+                            "cooldown_until": row.cooldown_until,
+                        }
+                        loaded += 1
+                if loaded:
+                    logger.info(f"Restored {loaded} active zone cooldowns from DB")
+        except Exception as e:
+            logger.warning(f"Could not load zone state from DB: {e}")
+
+    async def _save_zone_state(self, db):
+        """Persist current in-memory zone tracker state to DB after a trade is entered."""
+        try:
+            await db.execute(delete(ZoneMemory))
+            zt = self.signal_engine.zone_tracker
+            for zone_key, dirs in zt._zone_state.items():
+                for direction, state in dirs.items():
+                    db.add(ZoneMemory(
+                        zone_key=zone_key,
+                        direction=direction,
+                        signal_count=state.get("count", 0),
+                        last_signal_at=state.get("last_signal"),
+                        cooldown_until=state.get("cooldown_until"),
+                    ))
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"Could not save zone state to DB: {e}")
 
     def get_status(self) -> Dict:
         return {
