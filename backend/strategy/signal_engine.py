@@ -215,7 +215,13 @@ class SignalEngine:
             signal.strength = "BLOCKED"
             return signal
 
-        if funding_analysis.get("signal_strength") in ("MODERATE", "STRONG"):
+        # Only warn when funding is mildly against our direction
+        _fs = funding_analysis.get("overall_sentiment", "NEUTRAL")
+        _funding_against = (
+            (candidate_direction == "LONG"  and _fs == "BEARISH_CONTRARIAN") or
+            (candidate_direction == "SHORT" and _fs == "BULLISH_CONTRARIAN")
+        )
+        if _funding_against and funding_analysis.get("signal_strength") == "MODERATE":
             signal.warnings.append(f"Funding caution: {funding_analysis.get('description', '')}")
 
         # ─── Step 8: Macro calendar ───────────────────────────────────────
@@ -261,9 +267,17 @@ class SignalEngine:
         elif (candidate_direction == "LONG" and zone_position == "BOTTOM"):
             score += 10.0
 
-        # Funding rate bonus
-        if funding_analysis.get("position_modifier", 1.0) == 1.0:
-            score += 5.0
+        # Funding rate score — confirming means crowd is on the wrong side (squeeze setup)
+        funding_sentiment = funding_analysis.get("overall_sentiment", "NEUTRAL")
+        funding_confirms = (
+            (candidate_direction == "LONG"  and funding_sentiment == "BULLISH_CONTRARIAN") or
+            (candidate_direction == "SHORT" and funding_sentiment == "BEARISH_CONTRARIAN")
+        )
+        if funding_confirms:
+            score += 10.0  # crowd is on the other side — high conviction
+        elif funding_sentiment == "NEUTRAL":
+            score += 5.0   # balanced market
+        # mildly contradicting: +0 (trade still allowed, just smaller)
 
         # Macro bonus
         score += (macro_context.get("position_size_modifier", 1.0) - 0.5) * 20.0
@@ -285,10 +299,17 @@ class SignalEngine:
             signal.strength = "WEAK"
 
         # ─── Step 11: Compute final position size modifier ────────────────
-        combined_modifier = (
-            funding_analysis.get("position_modifier", 1.0) *
-            macro_context.get("position_size_modifier", 1.0)
-        )
+        # Funding modifier is direction-aware:
+        #   confirming (crowd on wrong side, squeeze setup) → full size
+        #   neutral                                         → full size
+        #   mildly contradicting (moderate crowding our way) → 0.75x
+        # Strongly contradicting is already blocked in Step 7.
+        if funding_confirms or funding_sentiment == "NEUTRAL":
+            funding_modifier = 1.0
+        else:
+            funding_modifier = funding_analysis.get("position_modifier", 1.0)
+
+        combined_modifier = funding_modifier * macro_context.get("position_size_modifier", 1.0)
         signal.position_size_modifier = max(0.25, combined_modifier)
 
         # ─── Final: Build entry reason ────────────────────────────────────
