@@ -356,7 +356,8 @@ class BotEngine:
             try:
                 ex_positions = await client.get_open_positions()
                 for ep in (ex_positions or []):
-                    raw_qty = ep.get("qty") or ep.get("size") or ep.get("quantity") or ep.get("positionAmt")
+                    # API fields: qty (size), side (LONG/SHORT), positionId
+                    raw_qty = ep.get("qty")
                     side = ep.get("side", "LONG")
                     position_id = ep.get("positionId")
                     if raw_qty:

@@ -65,8 +65,9 @@ class PositionManager:
             await self._log("ERROR", "ORDER", f"Failed to place {direction} order: {e}")
             return None
 
+        # Response: {"code": 0, "data": {"orderId": "...", "clientId": "..."}}
         data = order_result.get("data") or {}
-        order_id = str(order_result.get("orderId") or data.get("orderId") or data.get("orderID") or "unknown")
+        order_id = str(data.get("orderId") or order_result.get("orderId") or "unknown")
 
         # Fetch actual fill price from exchange (avoids CryptoCompare fallback price mismatch)
         import asyncio as _asyncio
@@ -76,7 +77,8 @@ class PositionManager:
             ex_positions = await self.client.get_open_positions()
             if ex_positions:
                 p = ex_positions[0]
-                raw = p.get("openPrice") or p.get("avgOpenPrice") or p.get("entryPrice") or p.get("avgPrice")
+                # API field: avgOpenPrice (average entry price)
+                raw = p.get("avgOpenPrice")
                 if raw:
                     fill_price = float(raw)
                     logger.info(f"Actual fill price from exchange: ${fill_price:,.2f} (ticker was ${current_price:,.2f})")
@@ -163,7 +165,8 @@ class PositionManager:
             qty = None
             position_id = None
             for ep in (ex_positions or []):
-                raw_qty = ep.get("qty") or ep.get("size") or ep.get("quantity") or ep.get("positionAmt")
+                # API fields: qty (position size), positionId (required for HEDGE mode close)
+                raw_qty = ep.get("qty")
                 if raw_qty:
                     qty = abs(float(raw_qty))
                     position_id = ep.get("positionId")

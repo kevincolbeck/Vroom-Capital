@@ -118,13 +118,14 @@ class BitunixClient:
                         "volume": float(c[5]),
                     })
                 elif isinstance(c, dict):
+                    # Bitunix kline dict fields: time, open, high, low, close, baseVol, quoteVol
                     candles.append({
-                        "open_time": int(c.get("openTime", c.get("ts", 0))),
+                        "open_time": int(c.get("time", c.get("openTime", c.get("ts", 0)))),
                         "open": float(c.get("open", 0)),
                         "high": float(c.get("high", 0)),
                         "low": float(c.get("low", 0)),
                         "close": float(c.get("close", 0)),
-                        "volume": float(c.get("volume", 0)),
+                        "volume": float(c.get("baseVol", c.get("volume", 0))),
                     })
             return sorted(candles, key=lambda x: x["open_time"])
         except Exception as e:
@@ -170,7 +171,7 @@ class BitunixClient:
                     "price": price,
                     "mark_price": price,
                     "index_price": price,
-                    "funding_rate": float(ticker.get("fundingRate", 0)),
+                    "funding_rate": 0.0,  # not in /tickers response; FundingRateMonitor fetches externally
                 }
             raise ValueError(f"{self.symbol} not found in tickers")
         except Exception as e:
