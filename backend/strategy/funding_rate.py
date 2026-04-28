@@ -76,7 +76,8 @@ class FundingRateMonitor:
                     params={"symbol": "BTCUSDT"}
                 )
                 d = resp.json()
-                data = d.get("data") or {}
+                items = d.get("data") or []
+                data = items[0] if isinstance(items, list) and items else {}
                 rate = data.get("fundingRate")
                 if rate is not None:
                     return float(rate)

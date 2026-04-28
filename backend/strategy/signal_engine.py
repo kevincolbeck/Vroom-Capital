@@ -17,6 +17,7 @@ from backend.strategy.velocity import check_velocity_filter, compute_velocity
 from backend.strategy.funding_rate import FundingRateMonitor
 from backend.strategy.macro_calendar import MacroCalendar
 from backend.strategy.liquidation_monitor import LiquidationMonitor
+from backend.strategy.order_flow import SpotOrderFlowMonitor
 from backend.config import settings
 
 
@@ -42,6 +43,7 @@ class TradeSignal:
         self.macro_context: Dict = {}
         self.time_context: Dict = {}
         self.liquidation_analysis: Dict = {}
+        self.spot_flow_analysis: Dict = {}
         self.current_price: float = 0.0
 
         self.generated_at: datetime = datetime.utcnow()
@@ -66,6 +68,7 @@ class TradeSignal:
             "macro": self.macro_context,
             "time": self.time_context,
             "liquidation": self.liquidation_analysis,
+            "spot_flow": self.spot_flow_analysis,
             "current_price": self.current_price,
             "generated_at": self.generated_at.isoformat(),
         }
@@ -84,6 +87,7 @@ class SignalEngine:
         self.funding_monitor = FundingRateMonitor()
         self.macro_calendar = MacroCalendar()
         self.liquidation_monitor = LiquidationMonitor()
+        self.order_flow_monitor = SpotOrderFlowMonitor()
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
 
@@ -108,8 +112,10 @@ class SignalEngine:
             return signal
 
         # ─── Step 1: Compute Heikin Ashi ───────────────────────────────────
-        ha_1h = compute_heikin_ashi(candles_1h[-50:])
-        ha_6h = compute_heikin_ashi(candles_6h[-30:])
+        # Drop the last candle (currently forming, not yet closed) so we only
+        # analyze confirmed closed candles — matches what you see on a chart.
+        ha_1h = compute_heikin_ashi(candles_1h[:-1][-50:])
+        ha_6h = compute_heikin_ashi(candles_6h[:-1][-30:])
 
         signal.ha_1h_color = get_candle_color(ha_1h)
         signal.ha_6h_color = get_candle_color(ha_6h)
@@ -195,6 +201,11 @@ class SignalEngine:
             signal.strength = "BLOCKED"
             return signal
 
+        # Kick off I/O-bound tasks concurrently now that all sync filters passed.
+        # Both are network fetches — running them in parallel saves ~6-8s per cycle.
+        liq_task  = asyncio.create_task(self.liquidation_monitor.fetch_all(current_price))
+        spot_task = asyncio.create_task(self.order_flow_monitor.fetch_all(current_price))
+
         # ─── Step 7: Funding rate check ───────────────────────────────────
         try:
             funding_rates = await self.funding_monitor.fetch_all()
@@ -210,6 +221,8 @@ class SignalEngine:
             candidate_direction, funding_analysis
         )
         if not funding_ok:
+            liq_task.cancel()
+            spot_task.cancel()
             signal.block_reasons.append(funding_reason)
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
@@ -229,6 +242,8 @@ class SignalEngine:
         signal.macro_context = macro_context
 
         if not macro_context["should_trade"]:
+            liq_task.cancel()
+            spot_task.cancel()
             signal.block_reasons.append(f"Macro block: {macro_context.get('block_description', macro_context['fomc_description'])}")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
@@ -236,12 +251,12 @@ class SignalEngine:
 
         # ─── Step 8.5: Liquidation positioning analysis ───────────────────
         try:
-            liq_data = await self.liquidation_monitor.fetch_all(current_price)
+            liq_data = await liq_task
             liq_score_delta, liq_desc = self.liquidation_monitor.get_trade_context(
                 candidate_direction, current_price, liq_data
             )
             signal.liquidation_analysis = {
-                **liq_data,
+                **{k: v for k, v in liq_data.items() if not k.startswith("_")},
                 "trade_context": liq_desc,
                 "score_delta": liq_score_delta,
             }
@@ -251,6 +266,27 @@ class SignalEngine:
             logger.warning(f"Liquidation analysis failed: {e}")
             liq_data = {}
             liq_score_delta = 0.0
+
+        # ─── Step 8.6: Spot order flow analysis ──────────────────────────
+        spot_score_delta = 0.0
+        try:
+            # spot_task warmed the cache; re-call with real oi_trend so divergence is accurate.
+            await spot_task
+            oi_trend = liq_data.get("oi_trend", "FLAT")
+            spot_data = await self.order_flow_monitor.fetch_all(current_price, oi_trend)
+            spot_score_delta, spot_desc = self.order_flow_monitor.get_trade_context(
+                candidate_direction, current_price, spot_data
+            )
+            signal.spot_flow_analysis = {
+                **spot_data,
+                "trade_context": spot_desc,
+                "score_delta": spot_score_delta,
+            }
+            if spot_score_delta != 0:
+                signal.warnings.append(f"Spot flow: {spot_desc}")
+        except Exception as e:
+            logger.warning(f"Spot order flow analysis failed: {e}")
+            spot_score_delta = 0.0
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
         score = 50.0  # Base
@@ -288,6 +324,9 @@ class SignalEngine:
 
         # Liquidation positioning bonus/penalty
         score += liq_score_delta
+
+        # Spot order flow bonus/penalty
+        score += spot_score_delta
 
         score = min(100.0, max(0.0, score))
         signal.confidence_score = score

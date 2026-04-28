@@ -47,19 +47,28 @@ function SignalIndicator({ signal }: { signal: any }) {
       <div className="space-y-2">
         {/* HA Trend */}
         <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500">6H Trend</span>
-          <span className={clsx('font-mono font-medium',
-            signal.ha_6h_color === 'GREEN' ? 'text-profit' : 'text-loss'
-          )}>
-            {signal.ha_6h_color || '—'} ▲
-          </span>
+          <span className="text-gray-500">6H Candle</span>
+          <div className="flex items-center gap-1.5">
+            <span className={clsx('font-mono font-medium',
+              signal.ha_6h_color === 'GREEN' ? 'text-profit' : 'text-loss'
+            )}>
+              {signal.ha_6h_color === 'GREEN' ? '▲' : '▼'} {signal.ha_6h_color || '—'}
+            </span>
+            {signal.ha_6h_trend && (
+              <span className={clsx('text-gray-600 font-mono',
+                signal.ha_6h_trend?.includes('BULLISH') ? 'text-profit/50' : 'text-loss/50'
+              )}>
+                ({signal.ha_6h_trend?.replace('_', ' ').toLowerCase()})
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500">1H Trend</span>
+          <span className="text-gray-500">1H Candle</span>
           <span className={clsx('font-mono font-medium',
             signal.ha_1h_color === 'GREEN' ? 'text-profit' : 'text-loss'
           )}>
-            {signal.ha_1h_color || '—'} ▲
+            {signal.ha_1h_color === 'GREEN' ? '▲' : '▼'} {signal.ha_1h_color || '—'}
           </span>
         </div>
 
@@ -259,6 +268,7 @@ export default function Dashboard() {
   const timeCtx = contextData?.time || {}
   const macroCtx = contextData?.macro || {}
   const fundingCtx = contextData?.funding || {}
+  const spotCtx = contextData?.spot_flow || {}
 
   const winRate = bot.win_rate || 0
   const totalPnl = bot.total_pnl_usd || 0
@@ -436,6 +446,61 @@ export default function Dashboard() {
               ))}
               <p className="text-gray-600 pt-1 text-xs">{fundingCtx.description}</p>
             </div>
+          </div>
+
+          {/* Spot Order Flow */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <BarChart2 size={16} className="text-brand" />
+                Spot Order Flow
+              </h3>
+              <span className={clsx('badge',
+                spotCtx.pressure?.pressure === 'BUY'  ? 'badge-green' :
+                spotCtx.pressure?.pressure === 'SELL' ? 'badge-red' : 'badge-gray'
+              )}>
+                {spotCtx.pressure?.pressure || 'N/A'}
+              </span>
+            </div>
+            {!spotCtx.available ? (
+              <div className="text-xs text-gray-600 py-2">Spot flow data unavailable</div>
+            ) : (
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Bid/Ask Ratio</span>
+                  <span className={clsx('font-mono',
+                    (spotCtx.pressure?.ratio ?? 1) > 1.3 ? 'text-profit' :
+                    (spotCtx.pressure?.ratio ?? 1) < 0.77 ? 'text-loss' : 'text-gray-300'
+                  )}>
+                    {spotCtx.pressure?.ratio?.toFixed(2) ?? '—'}x
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Divergence</span>
+                  <span className={clsx('font-mono',
+                    spotCtx.divergence?.includes('BULLISH') ? 'text-profit' :
+                    spotCtx.divergence?.includes('BEARISH') ? 'text-loss' : 'text-gray-300'
+                  )}>
+                    {spotCtx.divergence?.toLowerCase().replace(/_/g, ' ') ?? '—'}
+                  </span>
+                </div>
+                {(spotCtx.whale_walls?.length ?? 0) > 0 && (
+                  <div className="border-t border-dark-700 pt-2 space-y-1">
+                    <div className="text-gray-500 mb-1">Whale Walls <span className="text-gray-700">(approx)</span></div>
+                    {spotCtx.whale_walls.slice(0, 2).map((w: any, i: number) => (
+                      <div key={i} className={clsx('font-mono',
+                        w.side === 'bid' ? 'text-profit/80' : 'text-loss/80'
+                      )}>
+                        {w.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="text-gray-600 pt-1">
+                  {spotCtx.exchange_count ?? 0} exchanges · {spotCtx.exchanges?.join(', ') ?? '—'}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

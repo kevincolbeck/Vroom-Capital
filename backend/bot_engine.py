@@ -89,40 +89,72 @@ class BotEngine:
     async def _main_loop(self):
         """Main bot loop.
 
-        When flat  : full signal scan every 60s.
+        When flat  : sniper mode — sleeps to 2s before the next 1H candle
+                     boundary (UTC-aligned) then fires immediately at close.
+                     Matches backtest timing: evaluate exactly at candle close.
         In position: 1s price-only trailing stop check,
                      15s candle-based HA exit check,
                      60s full signal refresh.
         """
-        import time
+        import time as _time
         last_candle_check = 0.0
         last_full_tick    = 0.0
+        _first_flat_tick  = True   # evaluate immediately on startup, then boundary-align
 
         while self._running:
             try:
-                now = time.monotonic()
+                now = _time.monotonic()
                 has_open = await self._has_open_position()
 
                 if has_open:
+                    _first_flat_tick = False  # came from in-position; re-align on next flat
+
                     # 1s: trailing stop only (ticker, no klines)
                     await self._trailing_stop_tick()
 
                     # 15s: HA-based exits (needs klines)
                     if now - last_candle_check >= self.CANDLE_CHECK_SECONDS:
                         await self._position_tick()
-                        last_candle_check = time.monotonic()
+                        last_candle_check = _time.monotonic()
 
                     # 60s: full signal tick even while in position
                     if now - last_full_tick >= self.LOOP_INTERVAL_SECONDS:
                         await self._tick()
-                        last_full_tick = time.monotonic()
+                        last_full_tick = _time.monotonic()
 
                     await asyncio.sleep(self.PRICE_POLL_SECONDS)
                 else:
+                    if _first_flat_tick:
+                        # On startup (or recovery) evaluate once immediately so we
+                        # don't sit idle until the next boundary.
+                        _first_flat_tick = False
+                    else:
+                        # Sniper: sleep to 2s before the next UTC 1H boundary.
+                        # 1H candles close at exactly XX:00:00 UTC.
+                        # Cap at 5 min so the dashboard signal never goes fully stale.
+                        secs_to_next = 3600 - (_time.time() % 3600)
+                        sleep_for = max(secs_to_next - 2, 0)
+
+                        if sleep_for > 300:
+                            # Not near a boundary — sleep 5 min, refresh dashboard,
+                            # then loop back to recalculate the remaining wait.
+                            await asyncio.sleep(300)
+                            await self._tick()        # dashboard refresh only — won't trade (flat check inside)
+                            last_full_tick    = _time.monotonic()
+                            last_candle_check = _time.monotonic()
+                            continue                  # recompute secs_to_next next iteration
+
+                        if sleep_for > 1:
+                            logger.info(
+                                f"Sniper: {sleep_for:.0f}s to next 1H close "
+                                f"({secs_to_next:.0f}s remaining in candle)"
+                            )
+                            await asyncio.sleep(sleep_for)
+
+                    # ── At (or within 2s of) the candle boundary ──────────────
                     await self._tick()
-                    last_full_tick    = time.monotonic()
-                    last_candle_check = time.monotonic()
-                    await asyncio.sleep(self.LOOP_INTERVAL_SECONDS)
+                    last_full_tick    = _time.monotonic()
+                    last_candle_check = _time.monotonic()
 
             except asyncio.CancelledError:
                 break
@@ -132,6 +164,7 @@ class BotEngine:
                 await self._log("ERROR", "BOT", f"Bot loop error: {e}", details=str(e))
                 await asyncio.sleep(30)
                 await self._set_status(BotStatus.RUNNING)
+                _first_flat_tick = True  # re-evaluate immediately after recovery
                 continue
 
     async def _trailing_stop_tick(self):
@@ -192,8 +225,8 @@ class BotEngine:
             try:
                 candles_1h_raw = await client.get_klines("1h", limit=50)
                 candles_6h_raw = await client.get_klines("6h", limit=20)
-                ha_1h = compute_heikin_ashi(candles_1h_raw[-50:])
-                ha_6h = compute_heikin_ashi(candles_6h_raw[-20:])
+                ha_1h = compute_heikin_ashi(candles_1h_raw[:-1][-50:])
+                ha_6h = compute_heikin_ashi(candles_6h_raw[:-1][-20:])
             except Exception:
                 return
 
@@ -242,8 +275,8 @@ class BotEngine:
                 return
 
             # ─── Compute HA candles for exit checks ──────────────────
-            ha_1h = compute_heikin_ashi(candles_1h_raw[-50:])
-            ha_6h = compute_heikin_ashi(candles_6h_raw[-20:])
+            ha_1h = compute_heikin_ashi(candles_1h_raw[:-1][-50:])
+            ha_6h = compute_heikin_ashi(candles_6h_raw[:-1][-20:])
 
             # ─── Check and update open positions ──────────────────────
             open_positions = await pos_manager.get_open_positions()

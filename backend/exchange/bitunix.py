@@ -3,7 +3,6 @@ Bitunix Futures API Client
 Handles all exchange communication including orders, positions, and market data.
 """
 import hashlib
-import hmac
 import time
 import asyncio
 from typing import Optional, Dict, Any, List
@@ -197,7 +196,8 @@ class BitunixClient:
         """Get current BTCUSDT funding rate from Bitunix (public endpoint)."""
         try:
             data = await self._get("/api/v1/futures/market/funding_rate", {"symbol": self.symbol})
-            inner = data.get("data") or {}
+            items = data.get("data") or []
+            inner = items[0] if isinstance(items, list) and items else {}
             rate = inner.get("fundingRate")
             if rate is not None:
                 return float(rate)
@@ -292,7 +292,7 @@ class BitunixClient:
                 inner = data.get("data") or {}
                 if isinstance(inner, list):
                     return inner
-                return inner.get("resultList") or inner.get("list") or []
+                return inner.get("positionList") or []
             logger.warning(f"get_history_positions returned: {data}")
             return []
         except Exception as e:

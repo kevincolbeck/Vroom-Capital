@@ -23,6 +23,7 @@ from backend.strategy.signal_engine import SignalEngine
 from backend.strategy.time_filter import get_time_context
 from backend.strategy.macro_calendar import MacroCalendar
 from backend.strategy.funding_rate import FundingRateMonitor
+from backend.strategy.order_flow import SpotOrderFlowMonitor
 from backend.config import settings
 
 router = APIRouter()
@@ -54,6 +55,9 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
+
+# Shared monitor instances — retain order book cache across requests
+_order_flow_monitor = SpotOrderFlowMonitor()
 
 
 # ─── Auth ──────────────────────────────────────────────────────────────────
@@ -696,13 +700,32 @@ async def get_market_context(user: str = Depends(verify_token)):
     time_ctx = get_time_context()
     macro = MacroCalendar().get_macro_context()
     funding_monitor = FundingRateMonitor()
-    funding_rates = await funding_monitor.fetch_all()
+
+    # Fetch ticker for current price (needed for order book pressure window)
+    try:
+        client = get_bitunix_client()
+        ticker = await client.get_ticker()
+        current_price = ticker.get("price", 0.0)
+    except Exception:
+        current_price = 0.0
+
+    funding_rates, spot_flow = await asyncio.gather(
+        funding_monitor.fetch_all(),
+        _order_flow_monitor.fetch_all(current_price) if current_price else asyncio.sleep(0),
+        return_exceptions=True,
+    )
+
+    if isinstance(funding_rates, Exception):
+        funding_rates = {}
     funding = funding_monitor.analyze_funding(funding_rates)
+
+    spot_flow_data = spot_flow if isinstance(spot_flow, dict) else {"available": False}
 
     return {
         "time": time_ctx,
         "macro": macro,
         "funding": funding,
+        "spot_flow": spot_flow_data,
     }
 
 
