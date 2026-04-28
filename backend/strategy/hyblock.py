@@ -141,8 +141,10 @@ class HyblockMonitor:
 
         # Snapshot endpoints: no timeframe param accepted
         p_snap = {"coin": COIN, "exchange": EXCHANGE}
-        # Time-series endpoints: require timeframe+limit even for the latest bar
-        p_ts = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": "1"}
+        # Time-series endpoints: valid limit values are 5, 10, 20, 50, 100, 500, 1000
+        p_ts = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 5}
+        # averageLeverageUsed only works on OKX (not binance_perp_stable)
+        p_lev = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -158,7 +160,7 @@ class HyblockMonitor:
                 self._fetch(client, "liquidationHeatmap",     p_snap),  # snapshot only
                 self._fetch(client, "cumulativeLiqLevel",     p_snap),  # snapshot only
                 self._fetch(client, "openInterest",           p_ts,   unwrap_latest=True),
-                self._fetch(client, "averageLeverageUsed",    p_ts,   unwrap_latest=True),
+                self._fetch(client, "averageLeverageUsed",    p_lev,  unwrap_latest=True),
                 self._fetch(client, "topTraderPositions",     p_ts,   unwrap_latest=True),
                 self._fetch(client, "topTraderAccounts",      p_ts,   unwrap_latest=True),
                 self._fetch(client, "whaleRetailDelta",       p_ts,   unwrap_latest=True),
