@@ -414,11 +414,13 @@ class BacktestEngine:
 
         ha_1h_color = ha_1h[-1]["color"]
         ha_6h_color = ha_6h[-1]["color"]
+        ha_6h_trend = get_trend(ha_6h, lookback=3)
 
-        # Both HA must agree
-        if ha_1h_color == "GREEN" and ha_6h_color == "GREEN":
+        # Both HA must agree AND 6H trend must be confirmed by multiple candles
+        # (mirrors live signal_engine: bullish_trend/bearish_trend requirement)
+        if ha_1h_color == "GREEN" and ha_6h_color == "GREEN" and ha_6h_trend in ("BULLISH", "STRONG_BULLISH"):
             direction = "LONG"
-        elif ha_1h_color == "RED" and ha_6h_color == "RED":
+        elif ha_1h_color == "RED" and ha_6h_color == "RED" and ha_6h_trend in ("BEARISH", "STRONG_BEARISH"):
             direction = "SHORT"
         else:
             _block(block_stats, "ha_conflict")

@@ -72,6 +72,31 @@ function SignalIndicator({ signal }: { signal: any }) {
           </span>
         </div>
 
+        {/* 6H ratio */}
+        {signal.ha_6h_green_count != null && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">6H Ratio</span>
+            <span className={clsx('font-mono font-medium',
+              signal.ha_6h_green_count > signal.ha_6h_red_count ? 'text-profit' :
+              signal.ha_6h_red_count   > signal.ha_6h_green_count ? 'text-loss' : 'text-gray-400'
+            )}>
+              {signal.ha_6h_green_count}/{(signal.ha_6h_green_count + signal.ha_6h_red_count)} GREEN
+            </span>
+          </div>
+        )}
+
+        {/* 1H consecutive streak */}
+        {signal.ha_1h_consecutive != null && signal.ha_1h_color && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">1H Streak</span>
+            <span className={clsx('font-mono font-medium',
+              signal.ha_1h_color === 'GREEN' ? 'text-profit' : 'text-loss'
+            )}>
+              {signal.ha_1h_color} × {signal.ha_1h_consecutive}
+            </span>
+          </div>
+        )}
+
         {/* Zone */}
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-500">Zone</span>

@@ -46,6 +46,11 @@ class TradeSignal:
         self.spot_flow_analysis: Dict = {}
         self.current_price: float = 0.0
 
+        # 3M HA dashboard counters
+        self.ha_6h_green_count: int = 0
+        self.ha_6h_red_count: int = 0
+        self.ha_1h_consecutive: int = 0
+
         self.generated_at: datetime = datetime.utcnow()
 
     def to_dict(self) -> Dict:
@@ -70,6 +75,9 @@ class TradeSignal:
             "liquidation": self.liquidation_analysis,
             "spot_flow": self.spot_flow_analysis,
             "current_price": self.current_price,
+            "ha_6h_green_count": self.ha_6h_green_count,
+            "ha_6h_red_count": self.ha_6h_red_count,
+            "ha_1h_consecutive": self.ha_1h_consecutive,
             "generated_at": self.generated_at.isoformat(),
         }
 
@@ -120,6 +128,22 @@ class SignalEngine:
         signal.ha_1h_color = get_candle_color(ha_1h)
         signal.ha_6h_color = get_candle_color(ha_6h)
         signal.ha_6h_trend = get_trend(ha_6h, lookback=3)
+
+        # 6H ratio: color distribution of last 3 closed 6H candles
+        _last3_6h = ha_6h[-3:] if len(ha_6h) >= 3 else ha_6h
+        signal.ha_6h_green_count = sum(1 for c in _last3_6h if c["color"] == "GREEN")
+        signal.ha_6h_red_count   = len(_last3_6h) - signal.ha_6h_green_count
+
+        # 1H consecutive streak of the same color from the most recent candle
+        if ha_1h:
+            _streak_color = ha_1h[-1]["color"]
+            _streak = 0
+            for _c in reversed(ha_1h):
+                if _c["color"] == _streak_color:
+                    _streak += 1
+                else:
+                    break
+            signal.ha_1h_consecutive = _streak
 
         # ─── Step 2: Determine preliminary direction ────────────────────────
         # Both HA timeframes must agree AND 6h trend must be confirmed by
@@ -464,3 +488,41 @@ class SignalEngine:
             return True, "6h Heikin Ashi reversal detected — macro trend changing"
 
         return False, "Hold — no exit signal"
+
+    def check_3m_exit(
+        self,
+        position_side: str,
+        peak_profit_pct: float,
+        ha_3m: List[Dict],
+    ) -> Tuple[bool, str]:
+        """
+        3M HA exit — supplemental to the trailing stop, only fires after TP1.
+
+        After TP1 (peak >= 20%): 2 consecutive opposing 3M candles → exit
+        After TP2 (peak >= 30%): 1 opposing 3M candle → exit
+        """
+        if not ha_3m:
+            return False, "No 3M data"
+
+        tp1_threshold = settings.tp1_pct * 100   # 20.0%
+        tp2_threshold = settings.tp2_pct * 100   # 30.0%
+
+        if peak_profit_pct < tp1_threshold:
+            return False, "Pre-TP1 — 3M exit not active"
+
+        opp_count = count_consecutive_opposite(ha_3m, position_side)
+
+        if peak_profit_pct >= tp2_threshold:
+            if opp_count >= 1:
+                return True, (
+                    f"3M HA exit after TP2 (peak={peak_profit_pct:.1f}%): "
+                    f"{opp_count} opposing 3M candle(s)"
+                )
+        else:
+            if opp_count >= 2:
+                return True, (
+                    f"3M HA exit after TP1 (peak={peak_profit_pct:.1f}%): "
+                    f"{opp_count} consecutive opposing 3M candles"
+                )
+
+        return False, "Hold — 3M HA exit not triggered"

@@ -134,7 +134,7 @@ class BitunixClient:
     async def _get_klines_fallback(self, interval: str, limit: int) -> List[Dict]:
         """Fallback to Binance public API for klines if Bitunix fails."""
         interval_map = {
-            "1m": "1m", "5m": "5m", "15m": "15m",
+            "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m",
             "1h": "1h", "4h": "4h", "6h": "6h", "1d": "1d"
         }
         binance_interval = interval_map.get(interval, "1h")
