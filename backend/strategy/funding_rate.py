@@ -29,7 +29,9 @@ class FundingRateMonitor:
                     params={"symbol": "BTCUSDT"}
                 )
                 d = resp.json()
-                return float(d["lastFundingRate"])
+                rate = d.get("lastFundingRate")
+                if rate is not None:
+                    return float(rate)
         except Exception as e:
             logger.debug(f"Binance funding fetch failed: {e}")
             return None
