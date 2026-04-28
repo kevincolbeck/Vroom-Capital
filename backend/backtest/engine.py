@@ -284,7 +284,7 @@ class BacktestEngine:
                     # Cross-margin math: liq_price = entry ± buffer (exact)
                     # qty = capital / (buffer + entry × maint_rate)
                     MAINT_RATE = 0.005
-                    MAX_NOTIONAL = 5_000_000.0   # $5M cap — Bitunix liquidity ceiling
+                    MAX_NOTIONAL = 20_000_000.0  # $20M cap — Bitunix liquidity ceiling
                     target_buf = cfg.liquidation_buffer_usd  # $4,500
 
                     # Apply size modifier (FOMC/funding) — slightly adjusts buffer

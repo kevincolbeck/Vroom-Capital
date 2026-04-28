@@ -40,7 +40,7 @@ from backend.backtest.engine import BacktestEngine, BacktestConfig
 
 async def main():
     config = BacktestConfig(
-        start_year=2024,
+        start_year=2020,
         end_year=2024,   # engine uses start_year → end_year+1 Jan 1
         initial_capital=10_000.0,
         leverage=75,
@@ -66,7 +66,7 @@ async def main():
     )
 
     print("\n" + "=" * 72)
-    print("  VROOM CAPITAL — 1-YEAR BACKTEST  |  2024  |  $10k start  |  75x")
+    print("  VROOM CAPITAL — 5-YEAR BACKTEST  |  2020-2024  |  $10k start  |  75x")
     print("  Strategy: 1H HA + 6H HA + 6H trend confirmed  |  $3,250 liq buffer")
     print("=" * 72)
 

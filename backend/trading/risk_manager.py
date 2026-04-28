@@ -42,7 +42,7 @@ class RiskManager:
         """
         lev = leverage_override or self.leverage
         MAINT_RATE = 0.005
-        MAX_NOTIONAL = 5_000_000.0
+        MAX_NOTIONAL = 20_000_000.0
 
         # Size FROM the buffer: position is sized so liq is always $buffer away from entry
         target_buf = self.liquidation_buffer_usd * size_modifier
