@@ -260,10 +260,21 @@ class PositionManager:
         if not db_open:
             return 0
 
+        # Verify the exchange is reachable before trusting an empty position list.
+        # get_open_positions() swallows network errors and returns [] — indistinguishable
+        # from "flat". A ticker fetch confirms we can actually talk to the API.
+        if not self.client.api_key:
+            return 0
+        try:
+            await self.client.get_ticker()
+        except Exception as e:
+            logger.warning(f"Reconcile: exchange unreachable, skipping: {e}")
+            return 0
+
         try:
             ex_open = await self.client.get_open_positions()
         except Exception as e:
-            logger.warning(f"Reconcile: exchange position fetch failed: {e}")
+            logger.warning(f"Reconcile: position fetch failed: {e}")
             return 0
 
         # Exchange has at least one open position — nothing to reconcile

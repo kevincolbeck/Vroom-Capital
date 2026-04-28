@@ -88,8 +88,18 @@ class HyblockMonitor:
     # ─── HTTP ─────────────────────────────────────────────────────────────────
 
     async def _fetch(
-        self, client: httpx.AsyncClient, endpoint: str, params: Dict
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        params: Dict,
+        unwrap_latest: bool = False,
     ) -> Dict:
+        """
+        Fetch one Hyblock endpoint.
+        unwrap_latest=True  → for time-series endpoints: return the most recent bar
+                              from {"data": [...]} (limit=1 so only one bar anyway)
+        unwrap_latest=False → for snapshot endpoints: return the full response body
+        """
         url = f"{self.BASE_URL}/{endpoint}"
         token = await self._get_token(client)
         headers: Dict[str, str] = {"x-api-key": settings.hyblock_api_key}
@@ -98,7 +108,15 @@ class HyblockMonitor:
         try:
             resp = await client.get(url, params=params, headers=headers, timeout=10.0)
             resp.raise_for_status()
-            return resp.json()
+            body = resp.json()
+            if unwrap_latest and isinstance(body, dict) and "data" in body:
+                data = body["data"]
+                if isinstance(data, list) and data:
+                    return data[-1]  # most recent bar
+                if isinstance(data, dict):
+                    return data
+                return {}
+            return body if isinstance(body, dict) else {}
         except httpx.HTTPStatusError as e:
             logger.warning(f"Hyblock {endpoint}: HTTP {e.response.status_code}")
             return {}
@@ -121,7 +139,10 @@ class HyblockMonitor:
         if not settings.hyblock_api_key:
             return {"available": False, "reason": "No Hyblock API key configured"}
 
-        p = {"coin": COIN, "exchange": EXCHANGE}
+        # Snapshot endpoints: no timeframe param accepted
+        p_snap = {"coin": COIN, "exchange": EXCHANGE}
+        # Time-series endpoints: require timeframe+limit even for the latest bar
+        p_ts = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": "1"}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -131,18 +152,18 @@ class HyblockMonitor:
                 "whale_retail", "volume_delta", "funding",
             ]
             coros = [
-                self._fetch(client, "bidAsk", p),
-                self._fetch(client, "bidsIncreaseDecrease", p),
-                self._fetch(client, "asksIncreaseDecrease", p),
-                self._fetch(client, "liquidationHeatmap", p),
-                self._fetch(client, "cumulativeLiqLevel", p),
-                self._fetch(client, "openInterest", p),
-                self._fetch(client, "averageLeverageUsed", p),
-                self._fetch(client, "topTraderPositions", p),
-                self._fetch(client, "topTraderAccounts", p),
-                self._fetch(client, "whaleRetailDelta", p),
-                self._fetch(client, "volumeDelta", p),
-                self._fetch(client, "fundingRate", p),
+                self._fetch(client, "bidAsk",                 p_ts,   unwrap_latest=True),
+                self._fetch(client, "bidsIncreaseDecrease",   p_ts,   unwrap_latest=True),
+                self._fetch(client, "asksIncreaseDecrease",   p_ts,   unwrap_latest=True),
+                self._fetch(client, "liquidationHeatmap",     p_snap),  # snapshot only
+                self._fetch(client, "cumulativeLiqLevel",     p_snap),  # snapshot only
+                self._fetch(client, "openInterest",           p_ts,   unwrap_latest=True),
+                self._fetch(client, "averageLeverageUsed",    p_ts,   unwrap_latest=True),
+                self._fetch(client, "topTraderPositions",     p_ts,   unwrap_latest=True),
+                self._fetch(client, "topTraderAccounts",      p_ts,   unwrap_latest=True),
+                self._fetch(client, "whaleRetailDelta",       p_ts,   unwrap_latest=True),
+                self._fetch(client, "volumeDelta",            p_ts,   unwrap_latest=True),
+                self._fetch(client, "fundingRate",            p_ts,   unwrap_latest=True),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -187,8 +208,13 @@ class HyblockMonitor:
             "liq_clusters": liq_clusters,
             "oi_trend": oi_trend,
             # Useful raw snippets for the dashboard
-            "funding_rate_raw": raw["funding"].get("rate", raw["funding"].get("fundingRate", 0.0)),
-            "avg_leverage_raw": raw["avg_leverage"].get("value", raw["avg_leverage"].get("avgLeverage", 0.0)),
+            "funding_rate_raw": float(raw["funding"].get("fundingRate", raw["funding"].get("rate", 0.0))),
+            "avg_leverage_raw": (
+                (float(raw["avg_leverage"].get("avgLongLev", 0.0)) +
+                 float(raw["avg_leverage"].get("avgShortLev", 0.0))) / 2.0
+                if raw["avg_leverage"].get("avgLongLev") or raw["avg_leverage"].get("avgShortLev")
+                else 0.0
+            ),
         }
         self._set_cached(cache_key, result)
         return result
@@ -333,9 +359,9 @@ class HyblockMonitor:
                 surface[d] = (bid - ask) / total if total > 0 else 0.0
             return surface
 
-        # Shape 2: {"bidVolume": x, "askVolume": y} (single depth)
-        bid = float(bid_ask_data.get("bidVolume", bid_ask_data.get("bid_volume", 0)))
-        ask = float(bid_ask_data.get("askVolume", bid_ask_data.get("ask_volume", 0)))
+        # Shape 2: {"bid": x, "ask": y} (single depth, official field names)
+        bid = float(bid_ask_data.get("bid", bid_ask_data.get("bidVolume", bid_ask_data.get("bid_volume", 0))))
+        ask = float(bid_ask_data.get("ask", bid_ask_data.get("askVolume", bid_ask_data.get("ask_volume", 0))))
         total = bid + ask
         val = (bid - ask) / total if total > 0 else 0.0
         for d in DEPTH_LEVELS:
@@ -378,17 +404,21 @@ class HyblockMonitor:
         """
         risk = 0
 
-        # Leverage z-score
+        # Average leverage level (avgLongLev / avgShortLev from API)
         lev = raw.get("avg_leverage", {})
-        lev_z = float(lev.get("z_score", lev.get("zScore", 0.0)))
-        if lev_z > 2.0:
+        avg_long_lev = float(lev.get("avgLongLev", 0.0))
+        avg_short_lev = float(lev.get("avgShortLev", 0.0))
+        avg_lev = (avg_long_lev + avg_short_lev) / 2.0 if (avg_long_lev or avg_short_lev) else 0.0
+        if avg_lev > 30.0:
             risk += 3
-        elif lev_z > 1.0:
+        elif avg_lev > 20.0:
             risk += 1
 
-        # OI rate of change (24h)
+        # OI rate of change (computed from OHLC open/close — no roc field in API)
         oi = raw.get("open_interest", {})
-        oi_roc = float(oi.get("roc_24h_pct", oi.get("roc24hPct", oi.get("changePercent", 0.0))))
+        oi_open = float(oi.get("open", 0.0))
+        oi_close = float(oi.get("close", 0.0))
+        oi_roc = (oi_close - oi_open) / oi_open * 100 if oi_open > 0 else 0.0
         if abs(oi_roc) > 10.0:
             risk += 2
         elif abs(oi_roc) > 5.0:
@@ -396,19 +426,23 @@ class HyblockMonitor:
 
         # Extreme funding
         fd = raw.get("funding", {})
-        fr = float(fd.get("rate", fd.get("fundingRate", 0.0)))
+        fr = float(fd.get("fundingRate", fd.get("rate", 0.0)))
         if abs(fr) > 0.001:
             risk += 2
         elif abs(fr) > 0.0005:
             risk += 1
 
-        # Nearest liq cluster (from cumulative liq level)
+        # Liq pressure imbalance (totalLong vs totalShort liquidation size)
         cl = raw.get("cumulative_liq", {})
-        prox = float(cl.get("nearest_cluster_pct", cl.get("nearestClusterPct", 100.0)))
-        if prox < 2.0:
-            risk += 3
-        elif prox < 5.0:
-            risk += 1
+        long_liq = float(cl.get("totalLongLiquidationSize", 0.0))
+        short_liq = float(cl.get("totalShortLiquidationSize", 0.0))
+        total_liq = long_liq + short_liq
+        if total_liq > 0:
+            liq_imbalance = abs(long_liq - short_liq) / total_liq
+            if liq_imbalance > 0.5:
+                risk += 3
+            elif liq_imbalance > 0.25:
+                risk += 1
 
         if risk >= 6:
             return "CRITICAL"
@@ -419,7 +453,7 @@ class HyblockMonitor:
         return "LOW"
 
     def _parse_whale_sentiment(self, data: Dict) -> str:
-        delta = float(data.get("whale_delta", data.get("whaleDelta", data.get("delta", 0.0))))
+        delta = float(data.get("whaleRetailDelta", data.get("whale_delta", data.get("whaleDelta", data.get("delta", 0.0)))))
         if delta > 0.1:
             return "BULLISH"
         if delta < -0.1:
@@ -427,7 +461,7 @@ class HyblockMonitor:
         return "NEUTRAL"
 
     def _parse_top_trader_sentiment(self, data: Dict) -> str:
-        long_pct = float(data.get("long_pct", data.get("longPct", data.get("longAccount", 50.0))))
+        long_pct = float(data.get("longPct", data.get("long_pct", data.get("longAccount", 50.0))))
         if long_pct > 60.0:
             return "BULLISH"
         if long_pct < 40.0:
@@ -435,7 +469,7 @@ class HyblockMonitor:
         return "NEUTRAL"
 
     def _parse_volume_delta(self, data: Dict) -> str:
-        delta = float(data.get("delta", data.get("volumeDelta", 0.0)))
+        delta = float(data.get("volumeDelta", data.get("delta", 0.0)))
         if delta > 0.15:
             return "BUY_DOMINANT"
         if delta < -0.15:
@@ -444,21 +478,36 @@ class HyblockMonitor:
 
     def _parse_liq_clusters(self, heatmap: Dict, current_price: float) -> Dict:
         """Find nearest liquidation clusters above and below current price."""
-        levels = heatmap.get("levels", heatmap.get("data", []))
+        levels = heatmap.get("data") or heatmap.get("levels") or heatmap.get("heatmap") or []
+        if isinstance(levels, dict):
+            levels = list(levels.values())
         if not levels or current_price <= 0:
             return {"above_pct": None, "below_pct": None, "nearest_side": None}
 
-        above = [l for l in levels if float(l.get("price", 0)) > current_price]
-        below = [l for l in levels if float(l.get("price", 0)) < current_price]
+        def get_px(l: Dict) -> float:
+            # Hyblock heatmap API uses startingPrice/endingPrice — use midpoint
+            start = l.get("startingPrice")
+            end = l.get("endingPrice")
+            if start is not None and end is not None:
+                return (float(start) + float(end)) / 2.0
+            for key in ("price", "priceLevel", "price_level", "liqPrice", "liquidationPrice"):
+                v = l.get(key)
+                if v is not None:
+                    return float(v)
+            return 0.0
+
+        prices = [get_px(l) for l in levels if get_px(l) > 0]
+        above_prices = [p for p in prices if p > current_price]
+        below_prices = [p for p in prices if p < current_price]
 
         above_pct = None
         below_pct = None
 
-        if above:
-            px = min(float(l["price"]) for l in above)
+        if above_prices:
+            px = min(above_prices)
             above_pct = round((px - current_price) / current_price * 100, 2)
-        if below:
-            px = max(float(l["price"]) for l in below)
+        if below_prices:
+            px = max(below_prices)
             below_pct = round((current_price - px) / current_price * 100, 2)
 
         if above_pct is not None and below_pct is not None:
@@ -473,7 +522,10 @@ class HyblockMonitor:
         return {"above_pct": above_pct, "below_pct": below_pct, "nearest_side": nearest_side}
 
     def _parse_oi_trend(self, data: Dict) -> str:
-        roc = float(data.get("roc_24h_pct", data.get("roc24hPct", data.get("changePercent", 0.0))))
+        # OI API returns OHLC — compute pct change from open to close
+        oi_open = float(data.get("open", 0.0))
+        oi_close = float(data.get("close", 0.0))
+        roc = (oi_close - oi_open) / oi_open * 100 if oi_open > 0 else 0.0
         if roc > 3.0:
             return "RISING"
         if roc < -3.0:

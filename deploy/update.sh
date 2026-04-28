@@ -27,6 +27,8 @@ echo "  Done"
 # ── Rebuild frontend if source changed ───────────────────
 echo "[3/4] Rebuilding frontend..."
 cd "$APP_DIR/frontend"
+# Ensure dist is writable by the app user before building
+chown -R "$APP_USER":"$APP_USER" "$APP_DIR/frontend/dist" 2>/dev/null || true
 sudo -u "$APP_USER" npm install --silent
 sudo -u "$APP_USER" npm run build
 echo "  Done"
