@@ -32,6 +32,7 @@ class BotEngine:
         self._last_signal: Optional[Dict] = None
         self._current_position: Optional[Dict] = None
         self._manual_override: bool = False
+        self._last_reconcile_ts: float = 0.0
 
     # ─────────────────────────────────────────────────────────────────
     # Lifecycle
@@ -207,9 +208,22 @@ class BotEngine:
 
     async def _position_tick(self):
         """Lightweight tick — just fetch price and check exits. No candle fetch."""
+        import time as _time
         client = get_bitunix_client()
         async with AsyncSessionLocal() as db:
             pos_manager = PositionManager(client, db)
+
+            # Reconcile every 30s: if exchange is flat but DB shows OPEN, close the record
+            now = _time.monotonic()
+            if now - self._last_reconcile_ts >= 30.0:
+                self._last_reconcile_ts = now
+                try:
+                    n = await pos_manager.reconcile_positions()
+                    if n:
+                        logger.info(f"Reconciled {n} manually-closed position(s) from exchange")
+                        return
+                except Exception as e:
+                    logger.warning(f"Position reconcile error: {e}")
 
             try:
                 ticker = await client.get_ticker()

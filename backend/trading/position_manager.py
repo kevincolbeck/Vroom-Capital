@@ -249,6 +249,78 @@ class PositionManager:
         )
         return result.scalars().all()
 
+    async def reconcile_positions(self) -> int:
+        """
+        Compare DB-OPEN positions against live exchange positions.
+        If the exchange is flat but DB still shows OPEN (e.g. manual close),
+        mark the record closed and pull PnL from exchange history.
+        Returns the number of positions reconciled.
+        """
+        db_open = await self.get_open_positions()
+        if not db_open:
+            return 0
+
+        try:
+            ex_open = await self.client.get_open_positions()
+        except Exception as e:
+            logger.warning(f"Reconcile: exchange position fetch failed: {e}")
+            return 0
+
+        # Exchange has at least one open position — nothing to reconcile
+        if ex_open:
+            return 0
+
+        # Exchange is flat but DB shows positions open
+        reconciled = 0
+        for pos in db_open:
+            close_price = pos.entry_price  # fallback
+            realized_pnl_usd = None
+            fees_usd = None
+
+            # Try to get actuals from exchange history
+            try:
+                history = await self.client.get_history_positions(limit=5)
+                if history:
+                    h = history[0]
+                    cp = float(h.get("closePrice") or h.get("avgClosePrice") or 0)
+                    rp = float(h.get("realizedPNL") or h.get("realizedPnl") or 0)
+                    fee = float(h.get("fee") or h.get("tradeFee") or 0)
+                    if cp > 0:
+                        close_price = cp
+                    if rp != 0:
+                        realized_pnl_usd = rp
+                    if fee != 0:
+                        fees_usd = abs(fee)
+            except Exception as e:
+                logger.warning(f"Reconcile: history fetch failed: {e}")
+
+            pnl = self.risk_manager.calculate_pnl(
+                direction=pos.side,
+                entry_price=pos.entry_price,
+                current_price=close_price,
+                margin_usd=pos.margin_used_usd,
+                leverage=pos.leverage,
+            )
+
+            pos.exit_price = close_price
+            pos.realized_pnl_pct = pnl["pnl_pct"]
+            pos.realized_pnl_usd = realized_pnl_usd if realized_pnl_usd is not None else pnl["pnl_usd"]
+            pos.exit_reason = "manually_closed_on_exchange"
+            pos.status = PositionStatus.CLOSED
+            pos.closed_at = datetime.utcnow()
+            if fees_usd is not None:
+                pos.fees_usd = fees_usd
+
+            await self.db.commit()
+            await self._log(
+                "INFO", "POSITION",
+                f"Reconciled: {pos.side} manually closed on exchange | "
+                f"exit=${close_price:,.2f} | PnL=${pos.realized_pnl_usd:+.4f}"
+            )
+            reconciled += 1
+
+        return reconciled
+
     async def _log(self, level: str, category: str, message: str, details: str = None):
         """Write a log entry to the database."""
         log = BotLog(level=level, category=category, message=message, details=details)
