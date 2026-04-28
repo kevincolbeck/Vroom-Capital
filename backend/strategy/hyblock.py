@@ -262,37 +262,54 @@ class HyblockMonitor:
                 score -= 5.0
                 warnings.append("OBI depth-slope bearish — contradicts LONG")
 
-        # ── Whale/retail delta ────────────────────────────────────────────────
+        # ── Whale flow + top trader positioning (divergence-aware) ──────────────
+        # Best LONG: whales bullish + top traders crowded short (squeeze setup) → +12
+        # Best SHORT: whales bearish + top traders crowded long (fade setup)   → +12
+        # Conflicted (both imply same direction doubt)                          → +2 + warning
+        # Single signal alone                                                   → ±5
         whale = data.get("whale_sentiment", "NEUTRAL")
-        if whale == "BULLISH":
-            if direction == "LONG":
+        top   = data.get("top_trader_sentiment", "NEUTRAL")
+        whale_bull      = whale == "BULLISH"
+        whale_bear      = whale == "BEARISH"
+        top_crowd_long  = top == "BULLISH"   # top traders long → contrarian bearish
+        top_crowd_short = top == "BEARISH"   # top traders short → contrarian bullish
+
+        if direction == "LONG":
+            if whale_bull and top_crowd_short:
+                score += 12.0
+                notes.append("whales net long + top traders crowded short (strong squeeze setup)")
+            elif whale_bear and top_crowd_long:
+                score += 2.0
+                warnings.append("whale/top trader conflict — both suggest caution for LONG")
+            elif whale_bull:
                 score += 5.0
                 notes.append("whales net long")
-            else:
-                score -= 4.0
-                warnings.append("whales net long — contradicts SHORT")
-        elif whale == "BEARISH":
-            if direction == "SHORT":
-                score += 5.0
-                notes.append("whales net short")
-            else:
-                score -= 4.0
-                warnings.append("whales net short — contradicts LONG")
-
-        # ── Top traders (contrarian — crowded positions get faded) ────────────
-        top = data.get("top_trader_sentiment", "NEUTRAL")
-        if top == "BULLISH":
-            if direction == "SHORT":
-                score += 5.0
-                notes.append("top traders crowded long (fade setup)")
-            else:
-                score -= 3.0
-                warnings.append("top traders crowded long — crowded LONG trade")
-        elif top == "BEARISH":
-            if direction == "LONG":
+            elif top_crowd_short:
                 score += 5.0
                 notes.append("top traders crowded short (squeeze setup)")
-            else:
+            elif whale_bear:
+                score -= 4.0
+                warnings.append("whales net short — contradicts LONG")
+            elif top_crowd_long:
+                score -= 3.0
+                warnings.append("top traders crowded long — crowded LONG trade")
+        elif direction == "SHORT":
+            if whale_bear and top_crowd_long:
+                score += 12.0
+                notes.append("whales net short + top traders crowded long (strong fade setup)")
+            elif whale_bull and top_crowd_short:
+                score += 2.0
+                warnings.append("whale/top trader conflict — both suggest caution for SHORT")
+            elif whale_bear:
+                score += 5.0
+                notes.append("whales net short")
+            elif top_crowd_long:
+                score += 5.0
+                notes.append("top traders crowded long (fade setup)")
+            elif whale_bull:
+                score -= 4.0
+                warnings.append("whales net long — contradicts SHORT")
+            elif top_crowd_short:
                 score -= 3.0
                 warnings.append("top traders crowded short — crowded SHORT trade")
 
@@ -314,14 +331,23 @@ class HyblockMonitor:
                 warnings.append("sell-dominant volume — contradicts LONG")
 
         # ── Liquidation cluster proximity (price magnets) ─────────────────────
+        # Tier: <10 BTC = ignore noise, 10-100 BTC = +3, 100-500 BTC = +5, >500 BTC = +8
+        MIN_LIQ_BTC = 10.0
         liq = data.get("liq_clusters", {})
-        nearest = liq.get("nearest_side")
-        if nearest == "ABOVE" and direction == "LONG":
-            score += 5.0
-            notes.append(f"liq cluster {liq.get('above_pct', '?')}% above (magnet)")
-        elif nearest == "BELOW" and direction == "SHORT":
-            score += 5.0
-            notes.append(f"liq cluster {liq.get('below_pct', '?')}% below (magnet)")
+        if direction == "LONG":
+            above_pct  = liq.get("above_pct")
+            above_size = liq.get("above_size", 0.0) or 0.0
+            if above_pct is not None and above_size >= MIN_LIQ_BTC:
+                liq_pts = 8.0 if above_size > 500 else 5.0 if above_size > 100 else 3.0
+                score += liq_pts
+                notes.append(f"liq cluster {above_pct}% above ({above_size:.0f} BTC magnet +{liq_pts:.0f})")
+        elif direction == "SHORT":
+            below_pct  = liq.get("below_pct")
+            below_size = liq.get("below_size", 0.0) or 0.0
+            if below_pct is not None and below_size >= MIN_LIQ_BTC:
+                liq_pts = 8.0 if below_size > 500 else 5.0 if below_size > 100 else 3.0
+                score += liq_pts
+                notes.append(f"liq cluster {below_pct}% below ({below_size:.0f} BTC magnet +{liq_pts:.0f})")
 
         # ── Market Imbalance Index (replaces whale wall approximation) ───────────
         # Combines futures orderflow + orderbook pressure; -1 (sellers) to +1 (buyers)
@@ -350,12 +376,14 @@ class HyblockMonitor:
                 notes.append(f"market imbalance mildly bearish ({mii:+.2f})")
 
         # ── Fragility ─────────────────────────────────────────────────────────
+        # Skip if MII already shows directional pressure — avoid double-counting
         frag = data.get("fragility_level", "LOW")
-        if frag == "HIGH":
-            score -= 3.0
-            warnings.append("high order-book fragility — elevated slippage risk")
-        elif frag == "MEDIUM":
-            score -= 1.0
+        if abs(mii) <= 0.1:
+            if frag == "HIGH":
+                score -= 3.0
+                warnings.append("high order-book fragility — elevated slippage risk")
+            elif frag == "MEDIUM":
+                score -= 1.0
 
         # ── Cascade risk ──────────────────────────────────────────────────────
         cascade = data.get("cascade_risk", "LOW")
@@ -510,15 +538,15 @@ class HyblockMonitor:
         return "BALANCED"
 
     def _parse_liq_clusters(self, heatmap: Dict, current_price: float) -> Dict:
-        """Find nearest liquidation clusters above and below current price."""
+        """Find nearest liquidation clusters above and below current price, with BTC size."""
         levels = heatmap.get("data") or heatmap.get("levels") or heatmap.get("heatmap") or []
         if isinstance(levels, dict):
             levels = list(levels.values())
         if not levels or current_price <= 0:
-            return {"above_pct": None, "below_pct": None, "nearest_side": None}
+            return {"above_pct": None, "below_pct": None, "nearest_side": None,
+                    "above_size": 0.0, "below_size": 0.0}
 
         def get_px(l: Dict) -> float:
-            # Hyblock heatmap API uses startingPrice/endingPrice — use midpoint
             start = l.get("startingPrice")
             end = l.get("endingPrice")
             if start is not None and end is not None:
@@ -529,19 +557,32 @@ class HyblockMonitor:
                     return float(v)
             return 0.0
 
-        prices = [get_px(l) for l in levels if get_px(l) > 0]
-        above_prices = [p for p in prices if p > current_price]
-        below_prices = [p for p in prices if p < current_price]
+        def get_size(l: Dict) -> float:
+            # Sum long + short liquidation size; fall back to generic size fields
+            long_s  = l.get("longLiquidationSize",  l.get("longSize",  0.0)) or 0.0
+            short_s = l.get("shortLiquidationSize", l.get("shortSize", 0.0)) or 0.0
+            if long_s or short_s:
+                return float(long_s) + float(short_s)
+            for key in ("liquidationSize", "size", "btcSize", "totalSize", "notional"):
+                v = l.get(key)
+                if v is not None:
+                    return float(v)
+            return 0.0
 
-        above_pct = None
-        below_pct = None
+        above_pct = above_size = None
+        below_pct = below_size = None
 
-        if above_prices:
-            px = min(above_prices)
-            above_pct = round((px - current_price) / current_price * 100, 2)
-        if below_prices:
-            px = max(below_prices)
-            below_pct = round((current_price - px) / current_price * 100, 2)
+        above_levels = [(get_px(l), get_size(l)) for l in levels if get_px(l) > current_price]
+        below_levels = [(get_px(l), get_size(l)) for l in levels if 0 < get_px(l) < current_price]
+
+        if above_levels:
+            px = min(p for p, _ in above_levels)
+            above_pct  = round((px - current_price) / current_price * 100, 2)
+            above_size = round(sum(s for _, s in above_levels), 2)
+        if below_levels:
+            px = max(p for p, _ in below_levels)
+            below_pct  = round((current_price - px) / current_price * 100, 2)
+            below_size = round(sum(s for _, s in below_levels), 2)
 
         if above_pct is not None and below_pct is not None:
             nearest_side = "ABOVE" if above_pct < below_pct else "BELOW"
@@ -552,7 +593,13 @@ class HyblockMonitor:
         else:
             nearest_side = None
 
-        return {"above_pct": above_pct, "below_pct": below_pct, "nearest_side": nearest_side}
+        return {
+            "above_pct":   above_pct,
+            "below_pct":   below_pct,
+            "nearest_side": nearest_side,
+            "above_size":  above_size or 0.0,
+            "below_size":  below_size or 0.0,
+        }
 
     def _parse_oi_trend(self, data: Dict) -> str:
         # OI API returns OHLC — compute pct change from open to close
