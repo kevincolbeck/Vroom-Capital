@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { botApi, positionApi, marketApi } from '../lib/api'
+import { botApi, positionApi, marketApi, hyblockApi } from '../lib/api'
 import { formatPrice, formatPct, formatUsd, formatDate, timeAgo } from '../lib/utils'
 import {
   TrendingUp, TrendingDown, Activity, DollarSign, Target, AlertTriangle,
@@ -285,6 +285,12 @@ export default function Dashboard() {
     refetchInterval: 30000,
   })
 
+  const { data: hyblockData } = useQuery({
+    queryKey: ['hyblock-data'],
+    queryFn: () => hyblockApi.getData().then(r => r.data),
+    refetchInterval: 60000,
+  })
+
   const bot = statusData?.bot || {}
   const account = statusData?.account || {}
   const market = statusData?.market || {}
@@ -472,6 +478,115 @@ export default function Dashboard() {
               <p className="text-gray-600 pt-1 text-xs">{fundingCtx.description}</p>
             </div>
           </div>
+
+          {/* Hyblock Capital Intelligence */}
+          {hyblockData?.available && (
+            <div className="card">
+              <div className="card-header">
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Zap size={16} className="text-brand" />
+                  Hyblock Capital
+                </h3>
+                <span className={clsx('badge',
+                  hyblockData.cascade_risk === 'CRITICAL' ? 'badge-red' :
+                  hyblockData.cascade_risk === 'HIGH'     ? 'badge-yellow' :
+                  hyblockData.cascade_risk === 'MEDIUM'   ? 'badge-yellow' : 'badge-green'
+                )}>
+                  {hyblockData.cascade_risk || 'LOW'} CASCADE
+                </span>
+              </div>
+              <div className="space-y-2 text-xs">
+                {/* OBI Slope */}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">OBI Depth Slope</span>
+                  <span className={clsx('font-mono font-medium',
+                    hyblockData.obi_slope_direction === 'BULLISH' ? 'text-profit' :
+                    hyblockData.obi_slope_direction === 'BEARISH' ? 'text-loss' : 'text-gray-400'
+                  )}>
+                    {hyblockData.obi_slope_direction === 'BULLISH' ? '▲' :
+                     hyblockData.obi_slope_direction === 'BEARISH' ? '▼' : '—'}{' '}
+                    {hyblockData.obi_slope_direction}
+                  </span>
+                </div>
+                {/* Whale sentiment */}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">Whale Flow</span>
+                  <span className={clsx('font-mono font-medium',
+                    hyblockData.whale_sentiment === 'BULLISH' ? 'text-profit' :
+                    hyblockData.whale_sentiment === 'BEARISH' ? 'text-loss' : 'text-gray-400'
+                  )}>
+                    {hyblockData.whale_sentiment}
+                  </span>
+                </div>
+                {/* Top traders (contrarian) */}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">Top Traders</span>
+                  <span className={clsx('font-mono font-medium',
+                    hyblockData.top_trader_sentiment === 'BULLISH' ? 'text-profit' :
+                    hyblockData.top_trader_sentiment === 'BEARISH' ? 'text-loss' : 'text-gray-400'
+                  )}>
+                    {hyblockData.top_trader_sentiment}
+                    <span className="text-gray-600 font-normal"> (fade)</span>
+                  </span>
+                </div>
+                {/* Volume delta */}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">Volume Delta</span>
+                  <span className={clsx('font-mono font-medium',
+                    hyblockData.volume_delta_sentiment === 'BUY_DOMINANT'  ? 'text-profit' :
+                    hyblockData.volume_delta_sentiment === 'SELL_DOMINANT' ? 'text-loss' : 'text-gray-400'
+                  )}>
+                    {hyblockData.volume_delta_sentiment?.replace('_', ' ')}
+                  </span>
+                </div>
+                {/* OI trend */}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">OI Trend</span>
+                  <span className={clsx('font-mono',
+                    hyblockData.oi_trend === 'RISING'  ? 'text-profit' :
+                    hyblockData.oi_trend === 'FALLING' ? 'text-loss' : 'text-gray-400'
+                  )}>
+                    {hyblockData.oi_trend}
+                  </span>
+                </div>
+                {/* Fragility */}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">Book Fragility</span>
+                  <span className={clsx('font-mono',
+                    hyblockData.fragility_level === 'HIGH'   ? 'text-loss' :
+                    hyblockData.fragility_level === 'MEDIUM' ? 'text-warning' : 'text-profit'
+                  )}>
+                    {hyblockData.fragility_level}
+                  </span>
+                </div>
+                {/* Liq clusters */}
+                {(hyblockData.liq_clusters?.above_pct || hyblockData.liq_clusters?.below_pct) && (
+                  <div className="border-t border-dark-700 pt-2 space-y-1">
+                    <div className="text-gray-500 mb-1">Liq Clusters</div>
+                    {hyblockData.liq_clusters.above_pct != null && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Above</span>
+                        <span className="font-mono text-loss/80">+{hyblockData.liq_clusters.above_pct}%</span>
+                      </div>
+                    )}
+                    {hyblockData.liq_clusters.below_pct != null && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Below</span>
+                        <span className="font-mono text-profit/80">-{hyblockData.liq_clusters.below_pct}%</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Avg leverage */}
+                {hyblockData.avg_leverage_raw > 0 && (
+                  <div className="flex justify-between items-center border-t border-dark-700 pt-2">
+                    <span className="text-gray-500">Avg Leverage</span>
+                    <span className="font-mono text-gray-300">{Number(hyblockData.avg_leverage_raw).toFixed(1)}x</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Spot Order Flow */}
           <div className="card">

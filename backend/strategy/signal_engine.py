@@ -18,6 +18,7 @@ from backend.strategy.funding_rate import FundingRateMonitor
 from backend.strategy.macro_calendar import MacroCalendar
 from backend.strategy.liquidation_monitor import LiquidationMonitor
 from backend.strategy.order_flow import SpotOrderFlowMonitor
+from backend.strategy.hyblock import HyblockMonitor
 from backend.config import settings
 
 
@@ -44,6 +45,7 @@ class TradeSignal:
         self.time_context: Dict = {}
         self.liquidation_analysis: Dict = {}
         self.spot_flow_analysis: Dict = {}
+        self.hyblock_analysis: Dict = {}
         self.current_price: float = 0.0
 
         # 3M HA dashboard counters
@@ -74,6 +76,7 @@ class TradeSignal:
             "time": self.time_context,
             "liquidation": self.liquidation_analysis,
             "spot_flow": self.spot_flow_analysis,
+            "hyblock": self.hyblock_analysis,
             "current_price": self.current_price,
             "ha_6h_green_count": self.ha_6h_green_count,
             "ha_6h_red_count": self.ha_6h_red_count,
@@ -96,6 +99,7 @@ class SignalEngine:
         self.macro_calendar = MacroCalendar()
         self.liquidation_monitor = LiquidationMonitor()
         self.order_flow_monitor = SpotOrderFlowMonitor()
+        self.hyblock_monitor = HyblockMonitor()
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
 
@@ -222,9 +226,9 @@ class SignalEngine:
             return signal
 
         # Kick off I/O-bound tasks concurrently now that all sync filters passed.
-        # Both are network fetches — running them in parallel saves ~6-8s per cycle.
-        liq_task  = asyncio.create_task(self.liquidation_monitor.fetch_all(current_price))
-        spot_task = asyncio.create_task(self.order_flow_monitor.fetch_all(current_price))
+        liq_task     = asyncio.create_task(self.liquidation_monitor.fetch_all(current_price))
+        spot_task    = asyncio.create_task(self.order_flow_monitor.fetch_all(current_price))
+        hyblock_task = asyncio.create_task(self.hyblock_monitor.fetch_all(current_price))
 
         # ─── Step 7: Funding rate check ───────────────────────────────────
         try:
@@ -243,6 +247,7 @@ class SignalEngine:
         if not funding_ok:
             liq_task.cancel()
             spot_task.cancel()
+            hyblock_task.cancel()
             signal.block_reasons.append(funding_reason)
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
@@ -264,6 +269,7 @@ class SignalEngine:
         if not macro_context["should_trade"]:
             liq_task.cancel()
             spot_task.cancel()
+            hyblock_task.cancel()
             signal.block_reasons.append(f"Macro block: {macro_context.get('block_description', macro_context['fomc_description'])}")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
@@ -308,6 +314,33 @@ class SignalEngine:
             logger.warning(f"Spot order flow analysis failed: {e}")
             spot_score_delta = 0.0
 
+        # ─── Step 8.7: Hyblock Capital signals ───────────────────────────
+        hyblock_score_delta = 0.0
+        hyblock_block = False
+        try:
+            hyblock_data = await hyblock_task
+            hyblock_score_delta, hyblock_desc, hyblock_warnings, hyblock_block = \
+                self.hyblock_monitor.get_trade_context(candidate_direction, hyblock_data)
+            signal.hyblock_analysis = {
+                **{k: v for k, v in hyblock_data.items() if k != "raw"},
+                "trade_context": hyblock_desc,
+                "score_delta": hyblock_score_delta,
+            }
+            for w in hyblock_warnings:
+                signal.warnings.append(f"Hyblock: {w}")
+            if hyblock_desc and hyblock_desc != "No strong Hyblock signals":
+                signal.warnings.append(f"Hyblock: {hyblock_desc}")
+        except Exception as e:
+            logger.warning(f"Hyblock signal failed: {e}")
+            hyblock_data = {}
+            hyblock_block = False
+
+        if hyblock_block:
+            signal.block_reasons.append("Hyblock: CRITICAL cascade risk — entry blocked")
+            signal.direction = candidate_direction
+            signal.strength = "BLOCKED"
+            return signal
+
         # ─── Step 9: Calculate confidence score ───────────────────────────
         score = 50.0  # Base
 
@@ -347,6 +380,9 @@ class SignalEngine:
 
         # Spot order flow bonus/penalty
         score += spot_score_delta
+
+        # Hyblock signals bonus/penalty
+        score += hyblock_score_delta
 
         score = min(100.0, max(0.0, score))
         signal.confidence_score = score

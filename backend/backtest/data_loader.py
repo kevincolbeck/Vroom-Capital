@@ -26,6 +26,7 @@ CC_LIMIT = 2000  # max candles per request
 OKX_BASE = "https://www.okx.com"
 
 
+
 async def fetch_klines_cryptocompare(
     client: httpx.AsyncClient,
     interval: str,
@@ -287,6 +288,107 @@ def get_funding_at_time(funding_rates: Dict[int, float], ts_ms: int) -> float:
     if not valid:
         return 0.0
     return funding_rates[max(valid)]
+
+
+async def download_3m_klines(
+    start_dt: datetime,
+    end_dt: datetime,
+    progress_cb: Optional[Callable[[float, str], None]] = None,
+) -> List[Dict]:
+    """
+    Download 3-minute BTC-USDT-SWAP candles from OKX history-candles endpoint.
+    Same source as funding rates — free, no API key, US-accessible.
+    Paginates backward in 100-candle pages (OKX limit).
+    """
+    cache_file = CACHE_DIR / f"klines_3m_{start_dt.strftime('%Y%m%d')}_{end_dt.strftime('%Y%m%d')}.json"
+
+    if cache_file.exists():
+        logger.info(f"Loading cached 3M klines from {cache_file}")
+        with open(cache_file) as f:
+            data = json.load(f)
+        if progress_cb:
+            progress_cb(1.0, f"Loaded {len(data)} cached 3M candles")
+        return data
+
+    logger.info(f"Downloading 3M klines {start_dt.date()} → {end_dt.date()} (OKX history-candles)")
+    all_candles: List[Dict] = []
+    start_ms = int(start_dt.timestamp() * 1000)
+    end_ms = int(end_dt.timestamp() * 1000)
+    total_range = end_ms - start_ms
+
+    # OKX paginates backward: 'after' returns records with ts < after
+    current_after = end_ms + 1
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        consecutive_errors = 0
+        while current_after > start_ms:
+            try:
+                resp = await client.get(
+                    f"{OKX_BASE}/api/v5/market/history-candles",
+                    params={
+                        "instId": "BTC-USDT-SWAP",
+                        "bar": "3m",
+                        "after": str(current_after),
+                        "limit": "100",
+                    },
+                )
+                resp.raise_for_status()
+                body = resp.json()
+                consecutive_errors = 0
+            except Exception as e:
+                consecutive_errors += 1
+                logger.warning(f"OKX 3M fetch failed ({consecutive_errors}): {e}")
+                if consecutive_errors >= 5:
+                    logger.warning("OKX 3M unavailable after 5 retries — returning empty")
+                    break
+                await asyncio.sleep(3)
+                continue
+
+            rows = body.get("data", [])
+            if not rows:
+                break
+
+            for row in rows:
+                ts = int(row[0])
+                confirm = row[8] if len(row) > 8 else "1"
+                if confirm == "0":
+                    continue  # skip still-forming candle
+                if start_ms <= ts < end_ms:
+                    all_candles.append({
+                        "open_time": ts,
+                        "open":   float(row[1]),
+                        "high":   float(row[2]),
+                        "low":    float(row[3]),
+                        "close":  float(row[4]),
+                        "volume": float(row[5]),
+                    })
+
+            # OKX returns descending order; last row is the oldest
+            earliest = int(rows[-1][0])
+            progress = max(0.0, min((end_ms - earliest) / total_range, 1.0))
+            if progress_cb:
+                progress_cb(1.0 - progress, f"Downloading 3M: {len(all_candles):,} candles...")
+            logger.debug(f"  OKX 3M: {len(rows)} rows, earliest={earliest}")
+
+            if earliest <= start_ms:
+                break
+            current_after = earliest
+            await asyncio.sleep(0.1)
+
+    # Sort ascending and deduplicate
+    seen: set = set()
+    unique: List[Dict] = []
+    for c in sorted(all_candles, key=lambda x: x["open_time"]):
+        if c["open_time"] not in seen:
+            seen.add(c["open_time"])
+            unique.append(c)
+
+    with open(cache_file, "w") as f:
+        json.dump(unique, f)
+    logger.info(f"Downloaded {len(unique)} 3M candles, cached to {cache_file}")
+    if progress_cb:
+        progress_cb(1.0, f"Downloaded {len(unique)} 3M candles")
+    return unique
 
 
 def clear_cache():

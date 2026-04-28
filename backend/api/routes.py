@@ -24,6 +24,7 @@ from backend.strategy.time_filter import get_time_context
 from backend.strategy.macro_calendar import MacroCalendar
 from backend.strategy.funding_rate import FundingRateMonitor
 from backend.strategy.order_flow import SpotOrderFlowMonitor
+from backend.strategy.hyblock import HyblockMonitor
 from backend.config import settings
 
 router = APIRouter()
@@ -58,6 +59,7 @@ ws_manager = ConnectionManager()
 
 # Shared monitor instances — retain order book cache across requests
 _order_flow_monitor = SpotOrderFlowMonitor()
+_hyblock_monitor = HyblockMonitor()
 
 
 # ─── Auth ──────────────────────────────────────────────────────────────────
@@ -727,6 +729,22 @@ async def get_market_context(user: str = Depends(verify_token)):
         "funding": funding,
         "spot_flow": spot_flow_data,
     }
+
+
+# ─── Hyblock Data ────────────────────────────────────────────────────────────
+
+@router.get("/hyblock/data")
+async def get_hyblock_data(user: str = Depends(verify_token)):
+    """Return latest Hyblock Capital signal data (cached 60s)."""
+    try:
+        client = get_bitunix_client()
+        ticker = await client.get_ticker()
+        current_price = ticker.get("price", 0.0)
+    except Exception:
+        current_price = 0.0
+
+    data = await _hyblock_monitor.fetch_all(current_price)
+    return data
 
 
 # ─── WebSocket ───────────────────────────────────────────────────────────────

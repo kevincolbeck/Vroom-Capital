@@ -81,6 +81,10 @@ export const marketApi = {
   getContext: () => api.get('/market/context'),
 }
 
+export const hyblockApi = {
+  getData: () => api.get('/hyblock/data'),
+}
+
 export const backtestApi = {
   run: (config: any) => api.post('/backtest/run', config),
   getStatus: () => api.get('/backtest/status'),

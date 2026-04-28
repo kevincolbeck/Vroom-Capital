@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     trailing_after_tp1_peak_high_pct: float = Field(default=5.0)
     trailing_peak_threshold_pct: float = Field(default=25.0)
 
+    # Hyblock Capital API
+    hyblock_api_key: str = Field(default="")
+    hyblock_api_secret: str = Field(default="")
+    hyblock_base_url: str = Field(default="https://api.hyblockcapital.com/v2")
+    hyblock_confidence_threshold: float = Field(default=60.0)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
