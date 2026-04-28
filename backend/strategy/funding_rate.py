@@ -1,6 +1,6 @@
 """
 Funding Rate Monitor
-Tracks BTC funding rates across Binance, OKX, Deribit, and Bitunix.
+Tracks BTC funding rates across Gate.io, OKX, Deribit, and Bitunix.
 
 When all exchanges agree the rate is extreme, that's the strongest signal.
 Mixed readings dampen the average and reduce conviction.
@@ -20,21 +20,20 @@ class FundingRateMonitor:
     def __init__(self):
         self._cache: Dict[str, Optional[float]] = {}
 
-    async def fetch_binance_funding(self) -> Optional[float]:
-        """Binance — largest volume, most liquid perpetual market."""
+    async def fetch_gateio_funding(self) -> Optional[float]:
+        """Gate.io — top-5 exchange by volume, accessible from all regions."""
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
                 resp = await client.get(
-                    "https://fapi.binance.com/fapi/v1/premiumIndex",
-                    params={"symbol": "BTCUSDT"}
+                    "https://api.gateio.ws/api/v4/futures/usdt/contracts/BTC_USDT"
                 )
                 d = resp.json()
-                rate = d.get("lastFundingRate")
+                rate = d.get("funding_rate")
                 if rate is not None:
                     return float(rate)
         except Exception as e:
-            logger.debug(f"Binance funding fetch failed: {e}")
-            return None
+            logger.debug(f"Gate.io funding fetch failed: {e}")
+        return None
 
     async def fetch_okx_funding(self) -> Optional[float]:
         """OKX — high volume, reliable signal."""
@@ -95,14 +94,14 @@ class FundingRateMonitor:
         Mixed         → no clear signal, average dampened
         """
         results = await asyncio.gather(
-            self.fetch_binance_funding(),
+            self.fetch_gateio_funding(),
             self.fetch_okx_funding(),
             self.fetch_deribit_funding(),
             self.fetch_bitunix_funding(),
             return_exceptions=True,
         )
         rates = {
-            "binance": results[0] if not isinstance(results[0], Exception) else None,
+            "gateio":  results[0] if not isinstance(results[0], Exception) else None,
             "okx":     results[1] if not isinstance(results[1], Exception) else None,
             "deribit": results[2] if not isinstance(results[2], Exception) else None,
             "bitunix": results[3] if not isinstance(results[3], Exception) else None,
