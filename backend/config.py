@@ -49,8 +49,9 @@ class Settings(BaseSettings):
     trailing_peak_threshold_pct: float = Field(default=25.0)
 
     # Hyblock Capital API
-    hyblock_api_key: str = Field(default="")
-    hyblock_api_secret: str = Field(default="")
+    hyblock_api_key: str = Field(default="")           # x-api-key header
+    hyblock_access_key_id: str = Field(default="")     # OAuth2 client_id
+    hyblock_api_secret: str = Field(default="")        # OAuth2 client_secret
     hyblock_base_url: str = Field(default="https://api.hyblockcapital.com/v2")
     hyblock_confidence_threshold: float = Field(default=60.0)
 

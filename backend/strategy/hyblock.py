@@ -4,6 +4,7 @@ Fetches order book pressure, liquidation clusters, whale/retail positioning,
 and cascade risk signals from the Hyblock Capital enterprise API.
 """
 import asyncio
+import base64
 import time
 from typing import Dict, List, Optional, Tuple
 import httpx
@@ -15,6 +16,7 @@ COIN = "BTC"
 EXCHANGE = "binance_perp_stable"
 DEPTH_LEVELS = [1, 2, 5, 10]
 CACHE_TTL_SECONDS = 60
+TOKEN_TTL_SECONDS = 82800   # refresh 1h before the 24h expiry
 
 
 class HyblockMonitor:
@@ -35,6 +37,9 @@ class HyblockMonitor:
 
     def __init__(self):
         self._cache: Dict[str, Tuple[float, Dict]] = {}
+        self._token: Optional[str] = None
+        self._token_fetched_at: float = 0.0
+        self._token_lock = asyncio.Lock()
 
     # ─── Caching ─────────────────────────────────────────────────────────────
 
@@ -47,19 +52,51 @@ class HyblockMonitor:
     def _set_cached(self, key: str, data: Dict):
         self._cache[key] = (time.monotonic(), data)
 
+    # ─── OAuth2 token ─────────────────────────────────────────────────────────
+
+    async def _get_token(self, client: httpx.AsyncClient) -> Optional[str]:
+        """Return a valid Bearer token, fetching/refreshing as needed."""
+        async with self._token_lock:
+            age = time.monotonic() - self._token_fetched_at
+            if self._token and age < TOKEN_TTL_SECONDS:
+                return self._token
+            if not settings.hyblock_access_key_id or not settings.hyblock_api_secret:
+                return None
+            try:
+                basic = base64.b64encode(
+                    f"{settings.hyblock_access_key_id}:{settings.hyblock_api_secret}".encode()
+                ).decode()
+                resp = await client.post(
+                    f"{self.BASE_URL}/oauth2/token",
+                    data="grant_type=client_credentials",
+                    headers={
+                        "Authorization": f"Basic {basic}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "x-api-key": settings.hyblock_api_key,
+                    },
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                self._token = resp.json()["access_token"]
+                self._token_fetched_at = time.monotonic()
+                logger.info("Hyblock OAuth2 token refreshed")
+                return self._token
+            except Exception as e:
+                logger.warning(f"Hyblock token refresh failed: {e}")
+                return None
+
     # ─── HTTP ─────────────────────────────────────────────────────────────────
 
     async def _fetch(
         self, client: httpx.AsyncClient, endpoint: str, params: Dict
     ) -> Dict:
         url = f"{self.BASE_URL}/{endpoint}"
+        token = await self._get_token(client)
+        headers: Dict[str, str] = {"x-api-key": settings.hyblock_api_key}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
-            resp = await client.get(
-                url,
-                params=params,
-                headers={"x-api-key": settings.hyblock_api_key},
-                timeout=10.0,
-            )
+            resp = await client.get(url, params=params, headers=headers, timeout=10.0)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
