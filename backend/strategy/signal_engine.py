@@ -9,7 +9,7 @@ from loguru import logger
 
 from backend.strategy.heikin_ashi import (
     compute_heikin_ashi, get_trend, get_candle_color,
-    count_consecutive_opposite, detect_reversal
+    count_consecutive_opposite, detect_reversal, drop_in_progress
 )
 from backend.strategy.zones import ZoneTracker, get_zone_key, get_zone_position
 from backend.strategy.time_filter import check_time_filter, get_time_context
@@ -126,8 +126,8 @@ class SignalEngine:
         # ─── Step 1: Compute Heikin Ashi ───────────────────────────────────
         # Drop the last candle (currently forming, not yet closed) so we only
         # analyze confirmed closed candles — matches what you see on a chart.
-        ha_1h = compute_heikin_ashi(candles_1h[:-1][-50:])
-        ha_6h = compute_heikin_ashi(candles_6h[:-1][-30:])
+        ha_1h = compute_heikin_ashi(drop_in_progress(candles_1h, 3600)[-50:])
+        ha_6h = compute_heikin_ashi(drop_in_progress(candles_6h, 21600)[-30:])
 
         signal.ha_1h_color = get_candle_color(ha_1h)
         signal.ha_6h_color = get_candle_color(ha_6h)

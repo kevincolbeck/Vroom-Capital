@@ -2,8 +2,26 @@
 Heikin Ashi Candle Calculator
 Converts raw OHLCV data into Heikin Ashi candles for trend analysis.
 """
+import time
 from typing import List, Dict
 import numpy as np
+
+
+def drop_in_progress(candles: List[Dict], interval_seconds: int) -> List[Dict]:
+    """
+    Return `candles` with the last entry removed only if it is still forming.
+    Some exchange APIs return only closed candles (no in-progress stub), in
+    which case blindly stripping [-1] silently discards the most recent real
+    candle.  We check: if open_time + interval > now → still in-progress →
+    safe to strip.  Otherwise all returned candles are closed → keep them all.
+    """
+    if not candles:
+        return candles
+    now_ms = time.time() * 1000
+    last_open_ms = candles[-1]["open_time"]
+    if last_open_ms + interval_seconds * 1000 > now_ms:
+        return candles[:-1]
+    return candles
 
 
 def compute_heikin_ashi(candles: List[Dict]) -> List[Dict]:
