@@ -393,6 +393,15 @@ class SignalEngine:
         else:
             signal.strength = "WEAK"
 
+        # ─── Step 10.5: Minimum confidence gate ──────────────────────────
+        if score < 75.0:
+            signal.block_reasons.append(
+                f"Confidence {score:.0f}% below 75% threshold — no trade"
+            )
+            signal.direction = candidate_direction
+            signal.strength = "BLOCKED"
+            return signal
+
         # ─── Step 11: Compute final position size modifier ────────────────
         # Funding modifier is direction-aware:
         #   confirming (crowd on wrong side, squeeze setup) → full size

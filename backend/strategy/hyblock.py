@@ -151,7 +151,7 @@ class HyblockMonitor:
                 "bid_ask", "bids_change", "asks_change",
                 "liq_heatmap", "cumulative_liq", "open_interest",
                 "avg_leverage", "top_trader_pos", "top_trader_acc",
-                "whale_retail", "volume_delta", "funding",
+                "whale_retail", "volume_delta", "funding", "market_imbalance",
             ]
             coros = [
                 self._fetch(client, "bidAsk",                 p_ts,   unwrap_latest=True),
@@ -166,6 +166,7 @@ class HyblockMonitor:
                 self._fetch(client, "whaleRetailDelta",       p_ts,   unwrap_latest=True),
                 self._fetch(client, "volumeDelta",            p_ts,   unwrap_latest=True),
                 self._fetch(client, "fundingRate",            p_ts,   unwrap_latest=True),
+                self._fetch(client, "marketImbalanceIndex",   p_ts,   unwrap_latest=True),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -209,6 +210,10 @@ class HyblockMonitor:
             # Liquidations
             "liq_clusters": liq_clusters,
             "oi_trend": oi_trend,
+            # Market Imbalance Index (-1 to 1): combines orderflow + orderbook pressure
+            "market_imbalance_index": float(
+                raw["market_imbalance"].get("marketImbalanceIndex", 0.0)
+            ),
             # Useful raw snippets for the dashboard
             "funding_rate_raw": float(raw["funding"].get("fundingRate", raw["funding"].get("rate", 0.0))),
             "avg_leverage_raw": (
@@ -317,6 +322,32 @@ class HyblockMonitor:
         elif nearest == "BELOW" and direction == "SHORT":
             score += 5.0
             notes.append(f"liq cluster {liq.get('below_pct', '?')}% below (magnet)")
+
+        # ── Market Imbalance Index (replaces whale wall approximation) ───────────
+        # Combines futures orderflow + orderbook pressure; -1 (sellers) to +1 (buyers)
+        mii = data.get("market_imbalance_index", 0.0)
+        if mii > 0.3:
+            if direction == "LONG":
+                score += 6.0
+                notes.append(f"market imbalance strongly bullish ({mii:+.2f})")
+            else:
+                score -= 4.0
+                warnings.append(f"market imbalance bullish ({mii:+.2f}) — contradicts SHORT")
+        elif mii > 0.1:
+            if direction == "LONG":
+                score += 3.0
+                notes.append(f"market imbalance mildly bullish ({mii:+.2f})")
+        elif mii < -0.3:
+            if direction == "SHORT":
+                score += 6.0
+                notes.append(f"market imbalance strongly bearish ({mii:+.2f})")
+            else:
+                score -= 4.0
+                warnings.append(f"market imbalance bearish ({mii:+.2f}) — contradicts LONG")
+        elif mii < -0.1:
+            if direction == "SHORT":
+                score += 3.0
+                notes.append(f"market imbalance mildly bearish ({mii:+.2f})")
 
         # ── Fragility ─────────────────────────────────────────────────────────
         frag = data.get("fragility_level", "LOW")

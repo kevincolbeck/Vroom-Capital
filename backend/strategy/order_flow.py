@@ -17,17 +17,12 @@ from loguru import logger
 
 class SpotOrderFlowMonitor:
 
-    WALL_THRESHOLD_USD  = 1_000_000   # $1M+ = significant spot wall
-    WHALE_THRESHOLD_USD = 5_000_000   # $5M+ = whale wall approximation
-
     PRESSURE_WINDOW_PCT = 0.02        # ±2% price window for bid/ask imbalance
-    WALL_WINDOW_PCT     = 0.05        # ±5% window to look for walls
     CACHE_SECONDS       = 30          # Order books refresh every 30s
 
     # Score weights
     PRESSURE_SCORE   = 6.0    # Real bid/ask imbalance — meaningful signal
     DIVERGENCE_SCORE = 4.0    # Spot vs futures divergence — meaningful signal
-    WHALE_WALL_SCORE = 2.0    # Approximation only — intentionally low weight
 
     BINANCE_URL  = "https://api.binance.com"
     COINBASE_URL = "https://api.exchange.coinbase.com"
@@ -37,6 +32,7 @@ class SpotOrderFlowMonitor:
         self._cache: Optional[Dict] = None
         self._cache_time: float = 0
         self._cached_books: List[Dict] = []
+        self._WALL_WINDOW_PCT = 0.05  # kept for internal use, no longer scored
 
     # ─────────────────────────────────────────────────────────────────
     # Data Fetching
@@ -268,16 +264,14 @@ class SpotOrderFlowMonitor:
         Max contributions:
           Pressure confirms direction:  +6
           Divergence confirms direction: +4
-          Whale wall confirms direction: +2  (kept low — approximation only)
           Pressure against direction:   -3  (caution, not a block)
         """
         if not analysis.get("available"):
             return 0.0, "Spot flow unavailable"
 
-        pressure    = analysis.get("pressure", {}).get("pressure", "NEUTRAL")
-        ratio       = analysis.get("pressure", {}).get("ratio", 1.0)
-        divergence  = analysis.get("divergence", "NEUTRAL")
-        whale_walls = analysis.get("whale_walls", [])
+        pressure   = analysis.get("pressure", {}).get("pressure", "NEUTRAL")
+        ratio      = analysis.get("pressure", {}).get("ratio", 1.0)
+        divergence = analysis.get("divergence", "NEUTRAL")
 
         score = 0.0
         parts = []
@@ -305,17 +299,6 @@ class SpotOrderFlowMonitor:
         elif direction == "SHORT" and bearish_div:
             score += self.DIVERGENCE_SCORE
             parts.append(f"spot/futures {divergence.lower().replace('_', ' ')}")
-
-        # Whale wall approximation — low weight as designed
-        for w in whale_walls[:2]:
-            if direction == "LONG" and w["side"] == "bid" and w["price"] < current_price:
-                score += self.WHALE_WALL_SCORE
-                parts.append(w["label"])
-                break
-            if direction == "SHORT" and w["side"] == "ask" and w["price"] > current_price:
-                score += self.WHALE_WALL_SCORE
-                parts.append(w["label"])
-                break
 
         desc = " | ".join(parts) if parts else f"Spot flow neutral (pressure={pressure})"
         return score, desc

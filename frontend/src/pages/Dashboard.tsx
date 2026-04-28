@@ -577,6 +577,18 @@ export default function Dashboard() {
                     )}
                   </div>
                 )}
+                {/* Market Imbalance Index */}
+                {hyblockData.market_imbalance_index != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">Mkt Imbalance</span>
+                    <span className={clsx('font-mono font-medium',
+                      hyblockData.market_imbalance_index > 0.1  ? 'text-profit' :
+                      hyblockData.market_imbalance_index < -0.1 ? 'text-loss' : 'text-gray-400'
+                    )}>
+                      {hyblockData.market_imbalance_index > 0 ? '+' : ''}{Number(hyblockData.market_imbalance_index).toFixed(3)}
+                    </span>
+                  </div>
+                )}
                 {/* Avg leverage */}
                 {hyblockData.avg_leverage_raw > 0 && (
                   <div className="flex justify-between items-center border-t border-dark-700 pt-2">
@@ -624,18 +636,6 @@ export default function Dashboard() {
                     {spotCtx.divergence?.toLowerCase().replace(/_/g, ' ') ?? '—'}
                   </span>
                 </div>
-                {(spotCtx.whale_walls?.length ?? 0) > 0 && (
-                  <div className="border-t border-dark-700 pt-2 space-y-1">
-                    <div className="text-gray-500 mb-1">Whale Walls <span className="text-gray-700">(approx)</span></div>
-                    {spotCtx.whale_walls.slice(0, 2).map((w: any, i: number) => (
-                      <div key={i} className={clsx('font-mono',
-                        w.side === 'bid' ? 'text-profit/80' : 'text-loss/80'
-                      )}>
-                        {w.label}
-                      </div>
-                    ))}
-                  </div>
-                )}
                 <div className="text-gray-600 pt-1">
                   {spotCtx.exchange_count ?? 0} exchanges · {spotCtx.exchanges?.join(', ') ?? '—'}
                 </div>
