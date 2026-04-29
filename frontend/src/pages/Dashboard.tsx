@@ -3,7 +3,7 @@ import { botApi, positionApi, marketApi, hyblockApi } from '../lib/api'
 import { formatPrice, formatPct, formatUsd, formatDate, timeAgo } from '../lib/utils'
 import {
   TrendingUp, TrendingDown, Activity, DollarSign, Target, AlertTriangle,
-  Clock, Zap, ArrowUpRight, ArrowDownRight, BarChart2, Shield
+  Zap, ArrowUpRight, ArrowDownRight, BarChart2, Shield
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -296,7 +296,6 @@ export default function Dashboard() {
   const market = statusData?.market || {}
   const signal = statusData?.last_signal
   const openPositions = positionsData?.positions || []
-  const timeCtx = contextData?.time || {}
   const macroCtx = contextData?.macro || {}
   const fundingCtx = contextData?.funding || {}
   const spotCtx = contextData?.spot_flow || {}
@@ -381,37 +380,6 @@ export default function Dashboard() {
 
         {/* Center: Market Context */}
         <div className="space-y-4">
-          {/* Time Context */}
-          <div className="card">
-            <div className="card-header">
-              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Clock size={16} className="text-brand" />
-                Time Filter
-              </h3>
-              <span className={clsx('badge',
-                timeCtx.risk_level === 'EXTREME' ? 'badge-red' :
-                timeCtx.risk_level === 'HIGH' ? 'badge-yellow' :
-                timeCtx.risk_level === 'LOW' ? 'badge-green' : 'badge-gray'
-              )}>
-                {timeCtx.label || 'NEUTRAL'}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="text-center p-2 rounded-lg bg-dark-700">
-                <div className="text-gray-500 mb-1">LONG</div>
-                <div className={clsx('font-medium', timeCtx.long_blocked ? 'text-loss' : 'text-profit')}>
-                  {timeCtx.long_blocked ? '⛔ BLOCKED' : '✅ ALLOWED'}
-                </div>
-              </div>
-              <div className="text-center p-2 rounded-lg bg-dark-700">
-                <div className="text-gray-500 mb-1">SHORT</div>
-                <div className={clsx('font-medium', timeCtx.short_blocked ? 'text-loss' : 'text-profit')}>
-                  {timeCtx.short_blocked ? '⛔ BLOCKED' : '✅ ALLOWED'}
-                </div>
-              </div>
-            </div>
-          </div>
-
           {/* Macro Context */}
           <div className="card">
             <div className="card-header">
