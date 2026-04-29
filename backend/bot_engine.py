@@ -311,6 +311,7 @@ class BotEngine:
 
                     self._last_signal = signal.to_dict()
                     await self._log_signal_tick(signal)
+                    await self._write_signal_tick(signal, current_price, fired=False)
 
                     if signal.should_trade:
                         # Verify no position exists on exchange before priming
@@ -352,6 +353,7 @@ class BotEngine:
                                     f"Conf={signal.confidence_score:.0f}% | LiqTP={_liq_str} | "
                                     f"HA: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}")
                                 logger.info(f"Entry executed: {signal.direction} at {current_price:.2f}")
+                                await self._write_signal_tick(signal, current_price, fired=True)
                         else:
                             await self._log("WARNING", "RISK",
                                 f"Insufficient balance: ${account_balance:.2f} — skipping signal")
@@ -543,6 +545,53 @@ class BotEngine:
             level = "DEBUG"
 
         await self._log(level, "SIGNAL", msg)
+
+    async def _write_signal_tick(self, signal: "TradeSignal", price: float, fired: bool = False):
+        """
+        Persist the full signal state to signal_ticks for future backtesting / ML training.
+        Only called when direction is not None so neutral ticks are excluded.
+        """
+        if signal.direction is None:
+            return
+        import json as _json
+        from backend.database import SignalTick
+        hyblock = signal.hyblock_analysis or {}
+        funding = signal.funding_analysis  or {}
+        liq     = hyblock.get("liq_clusters") or {}
+        tick = SignalTick(
+            ts=datetime.utcnow(),
+            price=price,
+            direction=signal.direction,
+            should_trade=signal.should_trade,
+            fired=fired,
+            confidence_score=round(signal.confidence_score, 1),
+            position_size_modifier=signal.position_size_modifier,
+            block_reasons=_json.dumps(signal.block_reasons) if signal.block_reasons else None,
+            ha_6h_color=signal.ha_6h_color,
+            ha_1h_color=signal.ha_1h_color,
+            ha_3m_color=signal.ha_3m_color,
+            ha_6h_trend=signal.ha_6h_trend,
+            ha_6h_green_count=signal.ha_6h_green_count,
+            ha_6h_red_count=signal.ha_6h_red_count,
+            ha_1h_consecutive=signal.ha_1h_consecutive,
+            mii=hyblock.get("market_imbalance_index"),
+            obi_direction=hyblock.get("obi_slope_direction"),
+            whale_sentiment=hyblock.get("whale_sentiment"),
+            top_trader_sentiment=hyblock.get("top_trader_sentiment"),
+            volume_delta_sentiment=hyblock.get("volume_delta_sentiment"),
+            cascade_risk=hyblock.get("cascade_risk"),
+            liq_above_pct=liq.get("above_pct"),
+            liq_below_pct=liq.get("below_pct"),
+            liq_target_price=signal.liq_target_price,
+            funding_rate=funding.get("average_rate"),
+            funding_sentiment=funding.get("overall_sentiment"),
+        )
+        try:
+            async with AsyncSessionLocal() as db:
+                db.add(tick)
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"SignalTick write failed: {e}")
 
     async def _load_zone_state(self):
         """Restore zone cooldowns from DB into the in-memory zone tracker on startup."""

@@ -165,6 +165,53 @@ class ZoneMemory(Base):
     cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class SignalTick(Base):
+    """
+    Full signal state at every tick where the bot determines a candidate direction.
+    Captures both fired signals and blocked ones so we can train/backtest later.
+    Only written when direction is not None (neutral ticks are excluded).
+    """
+    __tablename__ = "signal_ticks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    price: Mapped[float] = mapped_column(Float)
+
+    # Signal outcome
+    direction: Mapped[str] = mapped_column(String(5))          # LONG / SHORT
+    should_trade: Mapped[bool] = mapped_column(Boolean, default=False)
+    fired: Mapped[bool] = mapped_column(Boolean, default=False) # True if position was actually opened
+    confidence_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    position_size_modifier: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    block_reasons: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
+
+    # HA colors
+    ha_6h_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    ha_1h_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    ha_3m_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    ha_6h_trend: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    ha_6h_green_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ha_6h_red_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ha_1h_consecutive: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Hyblock signals
+    mii: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    obi_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    whale_sentiment: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    top_trader_sentiment: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    volume_delta_sentiment: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    cascade_risk: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
+    # Liquidation clusters
+    liq_above_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_below_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_target_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Funding
+    funding_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    funding_sentiment: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
+
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
