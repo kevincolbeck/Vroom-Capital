@@ -98,8 +98,8 @@ class SpotOrderFlowMonitor:
         split across exchanges registers as one combined wall.
         """
         bin_size = 100.0
-        price_lo = current_price * (1 - self.WALL_WINDOW_PCT)
-        price_hi = current_price * (1 + self.WALL_WINDOW_PCT)
+        price_lo = current_price * (1 - self._WALL_WINDOW_PCT)
+        price_hi = current_price * (1 + self._WALL_WINDOW_PCT)
 
         bid_bands: Dict[float, float] = {}
         ask_bands: Dict[float, float] = {}
