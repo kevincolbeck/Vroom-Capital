@@ -180,23 +180,15 @@ class FundingRateMonitor:
 
     def get_trade_confirmation(self, direction: str, funding_analysis: Dict) -> Tuple[bool, str]:
         """
-        Check if funding rate confirms or contradicts the trade direction.
+        No hard blocks — funding informs the confidence score only.
 
-        Returns (confirmed: bool, reason: str)
+        For a cascade/liq-cluster strategy the interpretation is momentum-based,
+        not contrarian:
+          Negative funding (BULLISH_CONTRARIAN) → shorts piling in, cascade DOWN
+            → confirms SHORT, mild headwind for LONG
+          Positive funding (BEARISH_CONTRARIAN) → longs piling in, squeeze UP
+            → confirms LONG, mild headwind for SHORT
         """
         sentiment = funding_analysis.get("overall_sentiment", "NEUTRAL")
-        strength = funding_analysis.get("signal_strength", "WEAK")
-
-        # Strong contrarian signal against our direction = skip or reduce
-        if direction == "LONG" and sentiment == "BEARISH_CONTRARIAN" and strength == "STRONG":
-            return False, f"Funding rate strongly contrarian to LONG — skip (longs are already overcrowded)"
-        if direction == "SHORT" and sentiment == "BULLISH_CONTRARIAN" and strength == "STRONG":
-            return False, f"Funding rate strongly contrarian to SHORT — skip (shorts are already overcrowded)"
-
-        # Funding confirms our direction (trade with the crowd being wrong)
-        if direction == "LONG" and sentiment == "BULLISH_CONTRARIAN":
-            return True, f"Funding confirms LONG — shorts are squeezable"
-        if direction == "SHORT" and sentiment == "BEARISH_CONTRARIAN":
-            return True, f"Funding confirms SHORT — longs are squeezable"
-
-        return True, f"Funding rate neutral or moderate — proceed with standard sizing"
+        avg_rate = funding_analysis.get("average_rate", 0.0)
+        return True, f"Funding {sentiment} ({avg_rate*100:.3f}%) — score-only"

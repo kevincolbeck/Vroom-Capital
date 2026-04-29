@@ -253,19 +253,8 @@ class SignalEngine:
                                 "position_modifier": 1.0}
         signal.funding_analysis = funding_analysis
 
-        funding_ok, funding_reason = self.funding_monitor.get_trade_confirmation(
-            candidate_direction, funding_analysis
-        )
-        if not funding_ok:
-            liq_task.cancel()
-            spot_task.cancel()
-            hyblock_task.cancel()
-            signal.block_reasons.append(funding_reason)
-            signal.direction = candidate_direction
-            signal.strength = "BLOCKED"
-            return signal
-
-        # Only warn when funding is mildly against our direction
+        # Funding informs score only — no hard blocks.
+        # Warn when funding is mildly against direction (Scenario 1: "cautious, reduce size").
         _fs = funding_analysis.get("overall_sentiment", "NEUTRAL")
         _funding_against = (
             (candidate_direction == "LONG"  and _fs == "BEARISH_CONTRARIAN") or
