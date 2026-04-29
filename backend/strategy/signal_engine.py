@@ -343,18 +343,27 @@ class SignalEngine:
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
         score = 50.0  # Base
+        _breakdown: list[str] = ["base=50"]
 
         # HA alignment bonus
         if signal.ha_6h_trend in ("STRONG_BULLISH", "STRONG_BEARISH"):
             score += 20.0
+            _breakdown.append(f"HA_trend={signal.ha_6h_trend}(+20)")
         elif signal.ha_6h_trend in ("BULLISH", "BEARISH"):
             score += 10.0
+            _breakdown.append(f"HA_trend={signal.ha_6h_trend}(+10)")
+        else:
+            _breakdown.append(f"HA_trend={signal.ha_6h_trend}(+0)")
 
         # Zone position bonus
         if (candidate_direction == "SHORT" and zone_position == "TOP"):
             score += 10.0
+            _breakdown.append("zone=TOP(+10)")
         elif (candidate_direction == "LONG" and zone_position == "BOTTOM"):
             score += 10.0
+            _breakdown.append("zone=BOTTOM(+10)")
+        else:
+            _breakdown.append(f"zone={zone_position}(+0)")
 
         # Funding rate score — confirming means crowd is on the wrong side (squeeze setup)
         funding_sentiment = funding_analysis.get("overall_sentiment", "NEUTRAL")
@@ -363,29 +372,42 @@ class SignalEngine:
             (candidate_direction == "SHORT" and funding_sentiment == "BEARISH_CONTRARIAN")
         )
         if funding_confirms:
-            score += 10.0  # crowd is on the other side — high conviction
+            score += 10.0
+            _breakdown.append(f"funding={funding_sentiment}(+10)")
         elif funding_sentiment == "NEUTRAL":
-            score += 5.0   # balanced market
-        # mildly contradicting: +0 (trade still allowed, just smaller)
+            score += 5.0
+            _breakdown.append("funding=NEUTRAL(+5)")
+        else:
+            _breakdown.append(f"funding={funding_sentiment}(+0)")
 
         # Macro bonus
-        score += (macro_context.get("position_size_modifier", 1.0) - 0.5) * 20.0
+        macro_mod = macro_context.get("position_size_modifier", 1.0)
+        macro_pts = (macro_mod - 0.5) * 20.0
+        score += macro_pts
+        _breakdown.append(f"macro=mod{macro_mod:.2f}({macro_pts:+.0f})")
 
         # Time window bonus (active session = better)
         if time_context.get("risk_level") == "LOW":
             score += 5.0
+            _breakdown.append("time=LOW(+5)")
+        else:
+            _breakdown.append(f"time={time_context.get('risk_level','?')}(+0)")
 
         # Liquidation positioning bonus/penalty
         score += liq_score_delta
+        _breakdown.append(f"liq({liq_score_delta:+.1f})")
 
         # Spot order flow bonus/penalty
         score += spot_score_delta
+        _breakdown.append(f"spot({spot_score_delta:+.1f})")
 
         # Hyblock signals bonus/penalty
         score += hyblock_score_delta
+        _breakdown.append(f"hyblock({hyblock_score_delta:+.1f})")
 
         score = min(100.0, max(0.0, score))
         signal.confidence_score = score
+        logger.info(f"Score breakdown [{candidate_direction}]: {' | '.join(_breakdown)} → raw={score:.1f}%")
 
         # ─── Step 10: Determine strength ─────────────────────────────────
         if score >= 70.0 and signal.ha_6h_trend in ("STRONG_BULLISH", "STRONG_BEARISH", "BULLISH", "BEARISH"):
