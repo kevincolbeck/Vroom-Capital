@@ -66,6 +66,9 @@ class Position(Base):
     ha_6h_color: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     ha_1h_color: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     funding_rate_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_target_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mii_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    confidence_score_at_entry: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     is_copy_trade: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -170,6 +173,18 @@ async def get_db():
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # SQLite migration: add new columns to existing tables if they don't exist
+        from sqlalchemy import text
+        new_position_cols = [
+            ("liq_target_price", "REAL"),
+            ("mii_at_entry", "REAL"),
+            ("confidence_score_at_entry", "REAL"),
+        ]
+        for col_name, col_type in new_position_cols:
+            try:
+                await conn.execute(text(f"ALTER TABLE positions ADD COLUMN {col_name} {col_type}"))
+            except Exception:
+                pass  # column already exists
     async with AsyncSessionLocal() as session:
         from sqlalchemy import select
         result = await session.execute(select(BotState).where(BotState.id == 1))

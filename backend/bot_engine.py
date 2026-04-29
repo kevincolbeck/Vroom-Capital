@@ -46,6 +46,7 @@ class BotEngine:
         self._running = True
         self._paused = False
         await self._load_zone_state()
+        await self._restore_liq_target()
         self._task = asyncio.create_task(self._main_loop())
         await self._set_status(BotStatus.RUNNING)
         await self._log("INFO", "BOT", "Bot engine started")
@@ -309,6 +310,7 @@ class BotEngine:
                     )
 
                     self._last_signal = signal.to_dict()
+                    await self._log_signal_tick(signal)
 
                     if signal.should_trade:
                         # Verify no position exists on exchange before priming
@@ -344,8 +346,11 @@ class BotEngine:
                                 await self._save_zone_state(db)
                                 if settings.copy_trading_enabled:
                                     await copy_manager.open_copy_positions(new_position, signal.to_dict())
+                                _liq_str = f"${signal.liq_target_price:,.0f}" if signal.liq_target_price else "none"
                                 await self._log("INFO", "TRADE",
-                                    f"Entry: {signal.direction} at {current_price:.2f}")
+                                    f"Entry: {signal.direction} @ ${current_price:,.2f} | "
+                                    f"Conf={signal.confidence_score:.0f}% | LiqTP={_liq_str} | "
+                                    f"HA: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}")
                                 logger.info(f"Entry executed: {signal.direction} at {current_price:.2f}")
                         else:
                             await self._log("WARNING", "RISK",
@@ -492,6 +497,52 @@ class BotEngine:
             )
         )
         await db.commit()
+
+    async def _restore_liq_target(self):
+        """Restore liq cluster TP price from any open position in DB on startup."""
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(Position).where(Position.status == PositionStatus.OPEN).limit(1)
+                )
+                pos = result.scalar_one_or_none()
+                if pos and pos.liq_target_price:
+                    self._liq_target = pos.liq_target_price
+                    logger.info(f"Restored liq cluster TP from DB: ${self._liq_target:,.0f}")
+        except Exception as e:
+            logger.warning(f"Could not restore liq target from DB: {e}")
+
+    async def _log_signal_tick(self, signal: "TradeSignal"):
+        """Write a per-tick signal summary to BotLog for post-trade analysis.
+
+        Only logs when a direction was determined (HA aligned) — earlier blocks
+        (6h neutral, velocity) are journalctl-only via logger.info in signal_engine.
+        """
+        if signal.direction is None:
+            return
+
+        mii   = (signal.hyblock_analysis or {}).get("market_imbalance_index", 0.0)
+        obi   = (signal.hyblock_analysis or {}).get("obi_direction", "NEUTRAL")
+        fund  = (signal.funding_analysis  or {}).get("overall_sentiment", "NEUTRAL")
+        liq_str = f"${signal.liq_target_price:,.0f}" if signal.liq_target_price else "none"
+        ha_str  = f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
+        blocks  = " | ".join(signal.block_reasons[:2]) if signal.block_reasons else "none"
+
+        if signal.should_trade:
+            msg = (
+                f"SIGNAL FIRED: {signal.direction} | "
+                f"Conf={signal.confidence_score:.0f}% | MII={mii:+.2f} | "
+                f"LiqTP={liq_str} | OBI={obi} | Funding={fund} | {ha_str}"
+            )
+            level = "INFO"
+        else:
+            msg = (
+                f"BLOCKED {signal.direction}: {blocks} | "
+                f"MII={mii:+.2f} | {ha_str} | Conf={signal.confidence_score:.0f}%"
+            )
+            level = "DEBUG"
+
+        await self._log(level, "SIGNAL", msg)
 
     async def _load_zone_state(self):
         """Restore zone cooldowns from DB into the in-memory zone tracker on startup."""

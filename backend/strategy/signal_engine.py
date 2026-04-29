@@ -181,6 +181,10 @@ class SignalEngine:
             signal.block_reasons.append(
                 f"HA not aligned: 3m={signal.ha_3m_color}, 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color}"
             )
+            logger.info(
+                f"[{candidate_direction}] BLOCKED — HA misalign: "
+                f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
+            )
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             signal.velocity_data = compute_velocity(candles_1h)
@@ -351,6 +355,7 @@ class SignalEngine:
             signal.block_reasons.append(
                 f"MII {mii:+.2f} not bullish enough for LONG — need >{_mii_threshold:.2f}"
             )
+            logger.info(f"[LONG] BLOCKED — MII gate: {mii:+.2f} (need >{_mii_threshold:.2f})")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             return signal
@@ -358,6 +363,7 @@ class SignalEngine:
             signal.block_reasons.append(
                 f"MII {mii:+.2f} not bearish enough for SHORT — need <-{_mii_threshold:.2f}"
             )
+            logger.info(f"[SHORT] BLOCKED — MII gate: {mii:+.2f} (need <-{_mii_threshold:.2f})")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             return signal
@@ -385,6 +391,10 @@ class SignalEngine:
                     f"Liq cluster gate: {_above_size:.0f} BTC at "
                     f"{_above_pct}% above — need >={_min_btc:.0f} BTC within {_max_pct:.1f}%"
                 )
+                logger.info(
+                    f"[LONG] BLOCKED — liq cluster gate: {_above_size:.0f} BTC "
+                    f"@ {_above_pct}% above (need >={_min_btc:.0f} BTC within {_max_pct:.1f}%)"
+                )
                 signal.direction = candidate_direction
                 signal.strength = "BLOCKED"
                 return signal
@@ -403,6 +413,10 @@ class SignalEngine:
                 signal.block_reasons.append(
                     f"Liq cluster gate: {_below_size:.0f} BTC at "
                     f"{_below_pct}% below — need >={_min_btc:.0f} BTC within {_max_pct:.1f}%"
+                )
+                logger.info(
+                    f"[SHORT] BLOCKED — liq cluster gate: {_below_size:.0f} BTC "
+                    f"@ {_below_pct}% below (need >={_min_btc:.0f} BTC within {_max_pct:.1f}%)"
                 )
                 signal.direction = candidate_direction
                 signal.strength = "BLOCKED"
@@ -494,6 +508,10 @@ class SignalEngine:
         if score < 75.0:
             signal.block_reasons.append(
                 f"Confidence {score:.0f}% below 75% threshold — no trade"
+            )
+            logger.info(
+                f"[{candidate_direction}] BLOCKED — confidence {score:.0f}% < 75% | "
+                f"MII={mii:+.2f} | breakdown: {' '.join(_breakdown[-4:])}"
             )
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"

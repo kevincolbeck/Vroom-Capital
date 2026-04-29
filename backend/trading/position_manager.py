@@ -144,6 +144,9 @@ class PositionManager:
             ha_6h_color=signal_data.get("ha_6h_color", ""),
             ha_1h_color=signal_data.get("ha_1h_color", ""),
             funding_rate_at_entry=signal_data.get("funding", {}).get("average_rate", None),
+            liq_target_price=signal_data.get("liq_target_price"),
+            mii_at_entry=signal_data.get("hyblock", {}).get("market_imbalance_index"),
+            confidence_score_at_entry=signal_data.get("confidence_score"),
             opened_at=datetime.utcnow(),
         )
 
@@ -151,9 +154,19 @@ class PositionManager:
         await self.db.commit()
         await self.db.refresh(position)
 
+        _mii  = (signal_data.get("hyblock") or {}).get("market_imbalance_index", 0.0)
+        _conf = signal_data.get("confidence_score", 0.0)
+        _liq_tp = signal_data.get("liq_target_price")
+        _liq_str = f"${_liq_tp:,.0f}" if _liq_tp else "none"
+        _funding = signal_data.get("funding") or {}
+        _f_rate  = _funding.get("average_rate", 0.0)
+        _f_sent  = _funding.get("overall_sentiment", "NEUTRAL")
+        _obi     = (signal_data.get("hyblock") or {}).get("obi_direction", "NEUTRAL")
         await self._log(
             "INFO", "POSITION",
             f"Opened {direction} @ ${fill_price:,.2f} | "
+            f"Conf={_conf:.0f}% | MII={_mii:+.2f} | LiqTP={_liq_str} | "
+            f"OBI={_obi} | Funding={_f_sent}({_f_rate*100:.3f}%) | "
             f"Size: ${pos_params['margin_usd']:.0f} margin | "
             f"Liq: ${pos_params['liquidation_price']:,.0f} | "
             f"Order: {order_id}",
