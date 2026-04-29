@@ -1,0 +1,15 @@
+[Unit]
+Description=Hyblock Capital — Daily Time-Series Data Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=legion
+Group=legion
+WorkingDirectory=/home/legion/aiagent
+EnvironmentFile=/home/legion/aiagent/.env
+ExecStart=/home/legion/aiagent/venv/bin/python scripts/hyblock_data_collector.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hyblock-collector

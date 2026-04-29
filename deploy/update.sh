@@ -33,8 +33,16 @@ sudo -u "$APP_USER" npm install --silent
 sudo -u "$APP_USER" npm run build
 echo "  Done"
 
+# ── Install / refresh Hyblock collector timer ────────────
+echo "[4/5] Installing Hyblock collector timer..."
+cp "$APP_DIR/deploy/hyblock-collector.service" /etc/systemd/system/hyblock-collector.service
+cp "$APP_DIR/deploy/hyblock-collector.timer"   /etc/systemd/system/hyblock-collector.timer
+systemctl daemon-reload
+systemctl enable --now hyblock-collector.timer
+echo "  Done"
+
 # ── Restart bot ──────────────────────────────────────────
-echo "[4/4] Restarting bot..."
+echo "[5/5] Restarting bot..."
 systemctl restart legion-bot
 sleep 3
 
@@ -50,5 +58,6 @@ fi
 echo ""
 echo "  Update complete!"
 echo "  Live logs: journalctl -u legion-bot -f"
+echo "  Collector: journalctl -u hyblock-collector -n 20"
 echo "======================================================"
 echo ""

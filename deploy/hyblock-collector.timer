@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Hyblock data collector daily at 00:05 UTC
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
