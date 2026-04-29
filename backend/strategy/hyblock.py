@@ -435,11 +435,17 @@ class HyblockMonitor:
         Linear regression slope of OBI across depth levels.
         Positive = more relative bid depth at larger depths (bullish institutional pressure).
         Negative = more relative ask depth at larger depths (bearish institutional presence).
+
+        When the API returns only a single aggregate bid/ask (no per-depth data), all
+        surface levels are identical and the regression slope would be 0. In that case
+        return the OBI value directly — it's still a valid directional signal.
         """
         if len(surface) < 2:
             return 0.0
         xs = [float(k) for k in sorted(surface.keys())]
         ys = [surface[int(x)] for x in xs]
+        if len(set(ys)) == 1:
+            return ys[0]
         n = len(xs)
         xm = sum(xs) / n
         ym = sum(ys) / n
