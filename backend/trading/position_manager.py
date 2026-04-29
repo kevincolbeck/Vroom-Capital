@@ -14,6 +14,46 @@ from backend.trading.risk_manager import RiskManager
 from backend.config import settings
 
 
+def _match_history(history: list, position: "Position") -> Optional[dict]:
+    """
+    Find the exchange history entry that corresponds to `position`.
+    Priority order:
+      1. Match by orderId / positionId stored on the DB record
+      2. Match by (side, entry price within $50, most recent)
+    Returns None if no suitable match found.
+    """
+    if not history:
+        return None
+
+    oid = str(position.exchange_order_id or "")
+    side_str = str(position.side.value if hasattr(position.side, "value") else position.side).upper()
+
+    # Pass 1 — match by order / position ID
+    for h in history:
+        h_oid = str(h.get("orderId") or h.get("positionId") or h.get("id") or "")
+        if oid and oid != "unknown" and h_oid and h_oid == oid:
+            return h
+
+    # Pass 2 — match by side + entry price within $50
+    entry = position.entry_price or 0.0
+    candidates = []
+    for h in history:
+        h_side = str(h.get("side") or h.get("direction") or "").upper()
+        h_entry = float(h.get("entryPrice") or h.get("avgOpenPrice") or 0)
+        side_match = (
+            h_side == side_str
+            or (side_str == "LONG"  and h_side in ("BUY",  "LONG"))
+            or (side_str == "SHORT" and h_side in ("SELL", "SHORT"))
+        )
+        if side_match and h_entry > 0 and abs(h_entry - entry) <= 50:
+            candidates.append(h)
+
+    if candidates:
+        return candidates[0]   # history is newest-first; first match is most recent
+
+    return None
+
+
 class PositionManager:
 
     def __init__(self, client: BitunixClient, db: AsyncSession):
@@ -198,9 +238,9 @@ class PositionManager:
         import asyncio as _asyncio
         try:
             await _asyncio.sleep(3)
-            history = await self.client.get_history_positions(limit=5)
-            if history:
-                h = history[0]  # most recent closed position
+            history = await self.client.get_history_positions(limit=20)
+            h = _match_history(history, position)
+            if h is not None:
                 close_price  = float(h.get("closePrice") or h.get("avgClosePrice") or 0)
                 entry_price  = float(h.get("entryPrice") or h.get("avgOpenPrice") or 0)
                 realized_pnl = float(h.get("realizedPNL") or h.get("realizedPnl") or h.get("pnl") or 0)
@@ -225,6 +265,8 @@ class PositionManager:
                     f"Exchange reconcile — exit=${close_price:,.2f}, "
                     f"PnL=${realized_pnl:+.4f}, fees=${abs(fees):.4f}"
                 )
+            else:
+                logger.warning("Could not match exchange history entry — keeping computed PnL")
         except Exception as e:
             logger.warning(f"Could not reconcile with exchange history: {e}")
 
@@ -288,11 +330,11 @@ class PositionManager:
             realized_pnl_usd = None
             fees_usd = None
 
-            # Try to get actuals from exchange history
+            # Try to get actuals from exchange history — match by order/entry, not just [0]
             try:
-                history = await self.client.get_history_positions(limit=5)
-                if history:
-                    h = history[0]
+                history = await self.client.get_history_positions(limit=20)
+                h = _match_history(history, pos)
+                if h is not None:
                     cp = float(h.get("closePrice") or h.get("avgClosePrice") or 0)
                     rp = float(h.get("realizedPNL") or h.get("realizedPnl") or 0)
                     fee = float(h.get("fee") or h.get("tradeFee") or 0)
