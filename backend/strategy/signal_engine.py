@@ -8,8 +8,7 @@ from typing import Dict, Optional, Tuple, List
 from loguru import logger
 
 from backend.strategy.heikin_ashi import (
-    compute_heikin_ashi, get_trend, get_candle_color,
-    count_consecutive_opposite, detect_reversal, drop_in_progress
+    compute_heikin_ashi, get_trend, get_candle_color, drop_in_progress
 )
 from backend.strategy.zones import ZoneTracker, get_zone_key, get_zone_position
 from backend.strategy.time_filter import check_time_filter, get_time_context
@@ -600,89 +599,12 @@ class SignalEngine:
         entry_price: float,
         current_price: float,
         peak_profit_pct: float,
-        candles_1h_ha: List[Dict],
-        candles_6h_ha: List[Dict],
     ) -> Tuple[bool, str]:
         """
-        Check if an open position should be closed.
-        Returns (should_exit: bool, reason: str)
+        Exit model: liq cluster TP (checked every 1s in bot_engine) + trailing stop.
+        No HA-based exits — liq cluster scalping holds through candle noise.
         """
-        if not candles_1h_ha or not candles_6h_ha:
-            return False, "Insufficient data for exit check"
+        return self.check_trailing_stop(
+            position_side, entry_price, current_price, peak_profit_pct
+        )
 
-        # Calculate current unrealized P&L
-        if position_side == "LONG":
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100.0 * settings.leverage
-        else:
-            pnl_pct = ((entry_price - current_price) / entry_price) * 100.0 * settings.leverage
-
-        current_pnl_pct = pnl_pct
-
-        # ─── Trailing stop logic ──────────────────────────────────────────
-        # Gate on peak having reached TP1 — not on current PnL.
-        # This ensures the trail fires even if price has crashed back below 19%.
-        if peak_profit_pct >= settings.tp1_pct * 100:
-            trail_pct = (
-                settings.trailing_after_tp1_peak_high_pct
-                if peak_profit_pct >= settings.trailing_peak_threshold_pct
-                else settings.trailing_after_tp1_peak_low_pct
-            )
-            drawdown_from_peak = peak_profit_pct - current_pnl_pct
-            if drawdown_from_peak >= trail_pct:
-                return True, (
-                    f"Trailing stop: peak={peak_profit_pct:.1f}%, "
-                    f"current={current_pnl_pct:.1f}%, "
-                    f"drawdown={drawdown_from_peak:.1f}% >= trail={trail_pct}%"
-                )
-
-        # ─── 4-candle emergency close ─────────────────────────────────────
-        consecutive_opp = count_consecutive_opposite(candles_1h_ha, position_side)
-        if consecutive_opp >= settings.emergency_candles:
-            return True, (
-                f"Emergency close: {consecutive_opp} consecutive opposing 1h HA candles "
-                f"— thesis is broken"
-            )
-
-        # ─── 6h reversal check ───────────────────────────────────────────
-        if detect_reversal(candles_6h_ha, position_side):
-            return True, "6h Heikin Ashi reversal detected — macro trend changing"
-
-        return False, "Hold — no exit signal"
-
-    def check_3m_exit(
-        self,
-        position_side: str,
-        peak_profit_pct: float,
-        ha_3m: List[Dict],
-    ) -> Tuple[bool, str]:
-        """
-        3M HA exit — supplemental to the trailing stop, only fires after TP1.
-
-        After TP1 (peak >= 20%): 2 consecutive opposing 3M candles → exit
-        After TP2 (peak >= 30%): 1 opposing 3M candle → exit
-        """
-        if not ha_3m:
-            return False, "No 3M data"
-
-        tp1_threshold = settings.tp1_pct * 100   # 20.0%
-        tp2_threshold = settings.tp2_pct * 100   # 30.0%
-
-        if peak_profit_pct < tp1_threshold:
-            return False, "Pre-TP1 — 3M exit not active"
-
-        opp_count = count_consecutive_opposite(ha_3m, position_side)
-
-        if peak_profit_pct >= tp2_threshold:
-            if opp_count >= 1:
-                return True, (
-                    f"3M HA exit after TP2 (peak={peak_profit_pct:.1f}%): "
-                    f"{opp_count} opposing 3M candle(s)"
-                )
-        else:
-            if opp_count >= 2:
-                return True, (
-                    f"3M HA exit after TP1 (peak={peak_profit_pct:.1f}%): "
-                    f"{opp_count} consecutive opposing 3M candles"
-                )
-
-        return False, "Hold — 3M HA exit not triggered"

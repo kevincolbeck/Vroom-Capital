@@ -11,7 +11,6 @@ from loguru import logger
 from backend.database import AsyncSessionLocal, BotState, BotStatus, Position, PositionStatus, BotLog, ZoneMemory
 from backend.exchange.bitunix import get_bitunix_client
 from backend.strategy.signal_engine import SignalEngine, TradeSignal
-from backend.strategy.heikin_ashi import compute_heikin_ashi, drop_in_progress
 from backend.trading.position_manager import PositionManager
 from backend.copy_trading.manager import CopyTradingManager
 from backend.config import settings
@@ -225,15 +224,6 @@ class BotEngine:
             if not open_positions:
                 return
 
-            # Need HA candles for exit signal — fetch only if we have positions
-            try:
-                candles_1h_raw = await client.get_klines("1h", limit=50)
-                candles_6h_raw = await client.get_klines("6h", limit=20)
-                ha_1h = compute_heikin_ashi(drop_in_progress(candles_1h_raw, 3600)[-50:])
-                ha_6h = compute_heikin_ashi(drop_in_progress(candles_6h_raw, 21600)[-20:])
-            except Exception:
-                return
-
             copy_manager = CopyTradingManager(db)
             for position in open_positions:
                 position = await pos_manager.update_position(position, current_price)
@@ -244,8 +234,6 @@ class BotEngine:
                         entry_price=position.entry_price,
                         current_price=current_price,
                         peak_profit_pct=position.peak_profit_pct,
-                        candles_1h_ha=ha_1h,
-                        candles_6h_ha=ha_6h,
                     )
                     if should_exit:
                         await pos_manager.close_position(position, current_price, exit_reason)
@@ -284,10 +272,6 @@ class BotEngine:
             except Exception:
                 candles_3m_raw = []
 
-            # ─── Compute HA candles for exit checks (use closed candles) ─
-            ha_1h = compute_heikin_ashi(drop_in_progress(candles_1h_raw, 3600)[-50:])
-            ha_6h = compute_heikin_ashi(drop_in_progress(candles_6h_raw, 21600)[-20:])
-
             # ─── Check and update open positions ──────────────────────
             open_positions = await pos_manager.get_open_positions()
 
@@ -302,8 +286,6 @@ class BotEngine:
                         entry_price=position.entry_price,
                         current_price=current_price,
                         peak_profit_pct=position.peak_profit_pct,
-                        candles_1h_ha=ha_1h,
-                        candles_6h_ha=ha_6h,
                     )
                     if should_exit:
                         await pos_manager.close_position(position, current_price, exit_reason)
