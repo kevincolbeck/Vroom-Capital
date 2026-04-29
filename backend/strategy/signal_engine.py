@@ -11,7 +11,6 @@ from backend.strategy.heikin_ashi import (
     compute_heikin_ashi, get_trend, get_candle_color, drop_in_progress
 )
 from backend.strategy.zones import ZoneTracker, get_zone_key, get_zone_position
-from backend.strategy.time_filter import check_time_filter, get_time_context
 from backend.strategy.velocity import check_velocity_filter, compute_velocity
 from backend.strategy.funding_rate import FundingRateMonitor
 from backend.strategy.macro_calendar import MacroCalendar
@@ -41,7 +40,6 @@ class TradeSignal:
         self.velocity_data: Dict = {}
         self.funding_analysis: Dict = {}
         self.macro_context: Dict = {}
-        self.time_context: Dict = {}
         self.liquidation_analysis: Dict = {}
         self.spot_flow_analysis: Dict = {}
         self.hyblock_analysis: Dict = {}
@@ -78,7 +76,6 @@ class TradeSignal:
             "velocity": self.velocity_data,
             "funding": self.funding_analysis,
             "macro": self.macro_context,
-            "time": self.time_context,
             "liquidation": self.liquidation_analysis,
             "spot_flow": self.spot_flow_analysis,
             "hyblock": self.hyblock_analysis,
@@ -173,7 +170,6 @@ class SignalEngine:
             signal.block_reasons.append("6h HA neutral — no directional bias")
             signal.strength = "BLOCKED"
             signal.velocity_data = compute_velocity(candles_1h)
-            signal.time_context = get_time_context()
             signal.macro_context = self.macro_calendar.get_macro_context()
             return signal
 
@@ -188,7 +184,6 @@ class SignalEngine:
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             signal.velocity_data = compute_velocity(candles_1h)
-            signal.time_context = get_time_context()
             signal.macro_context = self.macro_calendar.get_macro_context()
             return signal
 
@@ -224,16 +219,8 @@ class SignalEngine:
 
         self._prev_price = current_price
 
-        # ─── Step 5: Time filter ──────────────────────────────────────────
-        time_allowed, time_reason = check_time_filter(candidate_direction)
-        time_context = get_time_context()
-        signal.time_context = time_context
-
-        if not time_allowed:
-            signal.block_reasons.append(time_reason)
-            signal.direction = candidate_direction
-            signal.strength = "BLOCKED"
-            return signal
+        # ─── Step 5 (removed): Time filter disabled — liq cluster entry strategy
+        #     fires during US session hours which were previously blocked.
 
         # ─── Step 6: Velocity filter ──────────────────────────────────────
         vel_allowed, vel_reason, vel_data = check_velocity_filter(
@@ -442,18 +429,20 @@ class SignalEngine:
         _bullish_trend = _trend in ("STRONG_BULLISH", "BULLISH")
         _bearish_trend = _trend in ("STRONG_BEARISH", "BEARISH")
         _strong = _trend in ("STRONG_BULLISH", "STRONG_BEARISH")
+        _liq_confirmed = signal.liq_target_price is not None
         if candidate_direction == "LONG":
             if _bullish_trend:
                 ha_pts = 20.0 if _strong else 10.0
             elif _bearish_trend:
-                ha_pts = -10.0 if _strong else -5.0  # contra-trend scalp — reduce confidence
+                # Liq cluster in range justifies the contra-trend entry — no penalty
+                ha_pts = 0.0 if _liq_confirmed else (-10.0 if _strong else -5.0)
             else:
                 ha_pts = 0.0
         else:  # SHORT
             if _bearish_trend:
                 ha_pts = 20.0 if _strong else 10.0
             elif _bullish_trend:
-                ha_pts = -10.0 if _strong else -5.0
+                ha_pts = 0.0 if _liq_confirmed else (-10.0 if _strong else -5.0)
             else:
                 ha_pts = 0.0
         score += ha_pts
@@ -489,13 +478,6 @@ class SignalEngine:
         macro_pts = (macro_mod - 0.5) * 20.0
         score += macro_pts
         _breakdown.append(f"macro=mod{macro_mod:.2f}({macro_pts:+.0f})")
-
-        # Time window bonus (active session = better)
-        if time_context.get("risk_level") == "LOW":
-            score += 5.0
-            _breakdown.append("time=LOW(+5)")
-        else:
-            _breakdown.append(f"time={time_context.get('risk_level','?')}(+0)")
 
         # Liquidation positioning bonus/penalty
         score += liq_score_delta
