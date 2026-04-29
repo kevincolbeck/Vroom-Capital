@@ -24,6 +24,9 @@ class SpotOrderFlowMonitor:
     PRESSURE_SCORE   = 6.0    # Real bid/ask imbalance — meaningful signal
     DIVERGENCE_SCORE = 4.0    # Spot vs futures divergence — meaningful signal
 
+    WALL_THRESHOLD_USD  = 5_000_000    # $5M minimum to show as a wall (display only)
+    WHALE_THRESHOLD_USD = 20_000_000   # $20M+ = whale wall label
+
     BINANCE_URL  = "https://api.binance.com"
     COINBASE_URL = "https://api.exchange.coinbase.com"
     KRAKEN_URL   = "https://api.kraken.com"
