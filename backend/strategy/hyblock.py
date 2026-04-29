@@ -569,18 +569,20 @@ class HyblockMonitor:
                     return float(v)
             return 0.0
 
-        above_pct = above_size = None
-        below_pct = below_size = None
+        above_pct = above_size = above_price_val = None
+        below_pct = below_size = below_price_val = None
 
         above_levels = [(get_px(l), get_size(l)) for l in levels if get_px(l) > current_price]
         below_levels = [(get_px(l), get_size(l)) for l in levels if 0 < get_px(l) < current_price]
 
         if above_levels:
             px = min(p for p, _ in above_levels)
+            above_price_val = round(px, 2)
             above_pct  = round((px - current_price) / current_price * 100, 2)
             above_size = round(sum(s for _, s in above_levels), 2)
         if below_levels:
             px = max(p for p, _ in below_levels)
+            below_price_val = round(px, 2)
             below_pct  = round((current_price - px) / current_price * 100, 2)
             below_size = round(sum(s for _, s in below_levels), 2)
 
@@ -594,11 +596,13 @@ class HyblockMonitor:
             nearest_side = None
 
         return {
-            "above_pct":   above_pct,
-            "below_pct":   below_pct,
+            "above_pct":    above_pct,
+            "above_price":  above_price_val,
+            "below_pct":    below_pct,
+            "below_price":  below_price_val,
             "nearest_side": nearest_side,
-            "above_size":  above_size or 0.0,
-            "below_size":  below_size or 0.0,
+            "above_size":   above_size or 0.0,
+            "below_size":   below_size or 0.0,
         }
 
     def _parse_oi_trend(self, data: Dict) -> str:

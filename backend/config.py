@@ -33,8 +33,13 @@ class Settings(BaseSettings):
     velocity_threshold_pct: float = Field(default=1.5)
     velocity_window_hours: int = Field(default=2)
     zone_size_usd: float = Field(default=1000.0)
-    zone_cooldown_minutes: int = Field(default=120)
+    zone_cooldown_minutes: int = Field(default=5)
     emergency_candles: int = Field(default=4)
+
+    # Liq cluster scalping entry gates
+    mii_entry_threshold: float = Field(default=0.3)       # MII must exceed ±this to enter
+    min_liq_cluster_btc: float = Field(default=50.0)      # cluster must have ≥ this BTC to count
+    liq_cluster_max_pct: float = Field(default=2.0)       # cluster must be within this % of price
     fomc_caution_days: int = Field(default=7)
 
     # Bot control

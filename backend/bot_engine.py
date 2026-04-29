@@ -33,6 +33,7 @@ class BotEngine:
         self._current_position: Optional[Dict] = None
         self._manual_override: bool = False
         self._last_reconcile_ts: float = 0.0
+        self._liq_target: Optional[float] = None  # liq cluster TP price for open position
 
     # ─────────────────────────────────────────────────────────────────
     # Lifecycle
@@ -91,17 +92,15 @@ class BotEngine:
     async def _main_loop(self):
         """Main bot loop.
 
-        When flat  : sniper mode — sleeps to 2s before the next 1H candle
-                     boundary (UTC-aligned) then fires immediately at close.
-                     Matches backtest timing: evaluate exactly at candle close.
-        In position: 1s price-only trailing stop check,
+        When flat  : poll every LOOP_INTERVAL_SECONDS (60s) — 3m HA entries
+                     can fire at any time, not only at hourly candle closes.
+        In position: 1s price-only trailing stop + liq cluster TP check,
                      15s candle-based HA exit check,
                      60s full signal refresh.
         """
         _time = _time_module
         last_candle_check = 0.0
         last_full_tick    = 0.0
-        _first_flat_tick  = True   # evaluate immediately on startup, then boundary-align
 
         while self._running:
             try:
@@ -109,9 +108,7 @@ class BotEngine:
                 has_open = await self._has_open_position()
 
                 if has_open:
-                    _first_flat_tick = False  # came from in-position; re-align on next flat
-
-                    # 1s: trailing stop only (ticker, no klines)
+                    # 1s: trailing stop + liq cluster TP (ticker only, no klines)
                     await self._trailing_stop_tick()
 
                     # 15s: HA-based exits (needs klines)
@@ -126,36 +123,11 @@ class BotEngine:
 
                     await asyncio.sleep(self.PRICE_POLL_SECONDS)
                 else:
-                    # ── SNIPER: sleep to 2s before next 1H candle close ──
-                    if _first_flat_tick:
-                        # On startup (or recovery) evaluate once immediately so we
-                        # don't sit idle until the next boundary.
-                        _first_flat_tick = False
-                    else:
-                        # Cap at 5 min so the dashboard signal never goes fully stale.
-                        secs_to_next = 3600 - (_time.time() % 3600)
-                        sleep_for = max(secs_to_next - 2, 0)
-
-                        if sleep_for > 300:
-                            # Not near a boundary — sleep 5 min, refresh dashboard,
-                            # then loop back to recalculate the remaining wait.
-                            await asyncio.sleep(300)
-                            await self._tick()        # dashboard refresh only
-                            last_full_tick    = _time.monotonic()
-                            last_candle_check = _time.monotonic()
-                            continue                  # recompute secs_to_next next iteration
-
-                        if sleep_for > 1:
-                            logger.info(
-                                f"Sniper: {sleep_for:.0f}s to next 1H close "
-                                f"({secs_to_next:.0f}s remaining in candle)"
-                            )
-                            await asyncio.sleep(sleep_for)
-
-                    # ── At (or within 2s of) the candle boundary ──────────
+                    # When flat: check for entries every LOOP_INTERVAL_SECONDS
                     await self._tick()
                     last_full_tick    = _time.monotonic()
                     last_candle_check = _time.monotonic()
+                    await asyncio.sleep(self.LOOP_INTERVAL_SECONDS)
 
             except asyncio.CancelledError:
                 break
@@ -165,7 +137,6 @@ class BotEngine:
                 await self._log("ERROR", "BOT", f"Bot loop error: {e}", details=str(e))
                 await asyncio.sleep(30)
                 await self._set_status(BotStatus.RUNNING)
-                _first_flat_tick = True  # re-evaluate immediately after recovery
                 continue
 
     async def _trailing_stop_tick(self):
@@ -187,6 +158,23 @@ class BotEngine:
             for position in open_positions:
                 position = await pos_manager.update_position(position, current_price)
 
+                # Liq cluster TP — primary exit target (price-based, checked at 1s)
+                if self._liq_target is not None:
+                    hits = (
+                        (position.side == "LONG"  and current_price >= self._liq_target) or
+                        (position.side == "SHORT" and current_price <= self._liq_target)
+                    )
+                    if hits:
+                        exit_reason = (
+                            f"Liq cluster TP: ${current_price:,.0f} reached "
+                            f"target ${self._liq_target:,.0f}"
+                        )
+                        await pos_manager.close_position(position, current_price, exit_reason)
+                        self._liq_target = None
+                        await copy_manager.close_copy_positions(position, exit_reason)
+                        await self._update_bot_stats(db, position)
+                        continue
+
                 if not self._manual_override:
                     should_exit, exit_reason = self.signal_engine.check_trailing_stop(
                         position_side=position.side,
@@ -196,6 +184,7 @@ class BotEngine:
                     )
                     if should_exit:
                         await pos_manager.close_position(position, current_price, exit_reason)
+                        self._liq_target = None
                         await copy_manager.close_copy_positions(position, exit_reason)
                         await self._update_bot_stats(db, position)
 
@@ -221,6 +210,7 @@ class BotEngine:
                     n = await pos_manager.reconcile_positions()
                     if n:
                         logger.info(f"Reconciled {n} manually-closed position(s) from exchange")
+                        self._liq_target = None
                         return
                 except Exception as e:
                     logger.warning(f"Position reconcile error: {e}")
@@ -259,6 +249,7 @@ class BotEngine:
                     )
                     if should_exit:
                         await pos_manager.close_position(position, current_price, exit_reason)
+                        self._liq_target = None
                         await copy_manager.close_copy_positions(position, exit_reason)
                         await self._update_bot_stats(db, position)
 
@@ -288,7 +279,12 @@ class BotEngine:
                 await self._log("WARNING", "DATA", "Insufficient candle data")
                 return
 
-            # ─── Compute HA candles for exit checks ──────────────────
+            try:
+                candles_3m_raw = await client.get_klines("3m", limit=20)
+            except Exception:
+                candles_3m_raw = []
+
+            # ─── Compute HA candles for exit checks (use closed candles) ─
             ha_1h = compute_heikin_ashi(drop_in_progress(candles_1h_raw, 3600)[-50:])
             ha_6h = compute_heikin_ashi(drop_in_progress(candles_6h_raw, 21600)[-20:])
 
@@ -311,6 +307,7 @@ class BotEngine:
                     )
                     if should_exit:
                         await pos_manager.close_position(position, current_price, exit_reason)
+                        self._liq_target = None
                         await copy_manager.close_copy_positions(position, exit_reason)
                         await self._update_bot_stats(db, position)
 
@@ -324,6 +321,7 @@ class BotEngine:
                     signal = await self.signal_engine.generate_signal(
                         candles_1h=candles_1h_raw,
                         candles_6h=candles_6h_raw,
+                        candles_3m=candles_3m_raw,
                         current_price=current_price,
                         active_position_side=active_side,
                     )
@@ -342,7 +340,6 @@ class BotEngine:
                             pass
 
                     if signal.should_trade:
-                        # Get account balance and enter immediately at 1H close
                         try:
                             balance_data = await client.get_account_balance()
                             account_balance = balance_data.get("available", 0)
@@ -359,6 +356,9 @@ class BotEngine:
                                 size_modifier=signal.position_size_modifier,
                             )
                             if new_position:
+                                self._liq_target = signal.liq_target_price
+                                if self._liq_target:
+                                    logger.info(f"Liq cluster TP target set: ${self._liq_target:,.0f}")
                                 await self._save_zone_state(db)
                                 if settings.copy_trading_enabled:
                                     await copy_manager.open_copy_positions(new_position, signal.to_dict())
@@ -373,6 +373,7 @@ class BotEngine:
                     signal = await self.signal_engine.generate_signal(
                         candles_1h=candles_1h_raw,
                         candles_6h=candles_6h_raw,
+                        candles_3m=candles_3m_raw,
                         current_price=current_price,
                         active_position_side=fresh_open[0].side if fresh_open else None,
                     )
@@ -417,6 +418,7 @@ class BotEngine:
                 logger.error(f"Emergency exchange close failed: {e}")
 
             # Step 2: mark all open DB positions closed
+            self._liq_target = None
             open_positions = await pos_manager.get_open_positions()
             for position in open_positions:
                 await pos_manager.close_position(

@@ -48,7 +48,13 @@ class TradeSignal:
         self.hyblock_analysis: Dict = {}
         self.current_price: float = 0.0
 
-        # 3M HA dashboard counters
+        # 3M HA
+        self.ha_3m_color: str = "NEUTRAL"
+
+        # Liq cluster take-profit target (set at entry, None if no cluster gate)
+        self.liq_target_price: Optional[float] = None
+
+        # Dashboard counters
         self.ha_6h_green_count: int = 0
         self.ha_6h_red_count: int = 0
         self.ha_1h_consecutive: int = 0
@@ -78,6 +84,8 @@ class TradeSignal:
             "spot_flow": self.spot_flow_analysis,
             "hyblock": self.hyblock_analysis,
             "current_price": self.current_price,
+            "ha_3m_color": self.ha_3m_color,
+            "liq_target_price": self.liq_target_price,
             "ha_6h_green_count": self.ha_6h_green_count,
             "ha_6h_red_count": self.ha_6h_red_count,
             "ha_1h_consecutive": self.ha_1h_consecutive,
@@ -109,10 +117,14 @@ class SignalEngine:
         candles_6h: List[Dict],
         current_price: float,
         active_position_side: Optional[str] = None,
+        candles_3m: Optional[List[Dict]] = None,
     ) -> TradeSignal:
         """
         Main signal generation function.
         Call this every minute from the bot loop.
+
+        Entry is triggered by MII + liq cluster (primary), confirmed by
+        3m/1h/6h HA current forming candle alignment.
 
         Returns a TradeSignal with all analysis results.
         """
@@ -123,22 +135,26 @@ class SignalEngine:
             signal.block_reasons.append("Insufficient candle data")
             return signal
 
-        # ─── Step 1: Compute Heikin Ashi ───────────────────────────────────
-        # Drop the last candle (currently forming, not yet closed) so we only
-        # analyze confirmed closed candles — matches what you see on a chart.
-        ha_1h = compute_heikin_ashi(drop_in_progress(candles_1h, 3600)[-50:])
-        ha_6h = compute_heikin_ashi(drop_in_progress(candles_6h, 21600)[-30:])
+        # ─── Step 1: Compute Heikin Ashi using CURRENT FORMING candle ──────
+        # For entry: include the current forming candle (candles[-1]) so
+        # sub-minute entries fire without waiting for an hourly close.
+        # For exits (get_exit_signal): drop_in_progress is still used to
+        # avoid exiting on a forming candle that hasn't confirmed.
+        ha_1h = compute_heikin_ashi(candles_1h[-50:])
+        ha_6h = compute_heikin_ashi(candles_6h[-30:])
+        ha_3m = compute_heikin_ashi((candles_3m or [])[-20:])
 
         signal.ha_1h_color = get_candle_color(ha_1h)
         signal.ha_6h_color = get_candle_color(ha_6h)
+        signal.ha_3m_color = get_candle_color(ha_3m) if ha_3m else "NEUTRAL"
         signal.ha_6h_trend = get_trend(ha_6h, lookback=3)
 
-        # 6H ratio: color distribution of last 3 closed 6H candles
+        # 6H ratio: color distribution of last 3 6H candles (including forming)
         _last3_6h = ha_6h[-3:] if len(ha_6h) >= 3 else ha_6h
         signal.ha_6h_green_count = sum(1 for c in _last3_6h if c["color"] == "GREEN")
         signal.ha_6h_red_count   = len(_last3_6h) - signal.ha_6h_green_count
 
-        # 1H consecutive streak of the same color from the most recent candle
+        # 1H consecutive streak
         if ha_1h:
             _streak_color = ha_1h[-1]["color"]
             _streak = 0
@@ -149,25 +165,35 @@ class SignalEngine:
                     break
             signal.ha_1h_consecutive = _streak
 
-        # ─── Step 2: Determine preliminary direction ────────────────────────
-        # Both HA timeframes must agree on color — 1H GREEN + 6H GREEN for LONG,
-        # 1H RED + 6H RED for SHORT.
-        if signal.ha_1h_color == "GREEN" and signal.ha_6h_color == "GREEN":
+        # ─── Step 2: Direction from 6h forming candle ──────────────────────
+        if signal.ha_6h_color == "GREEN":
             candidate_direction = "LONG"
-        elif signal.ha_1h_color == "RED" and signal.ha_6h_color == "RED":
+        elif signal.ha_6h_color == "RED":
             candidate_direction = "SHORT"
         else:
-            signal.block_reasons.append(
-                f"HA not confirmed: 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color} — wait for alignment"
-            )
-            signal.direction = None
+            signal.block_reasons.append("6h HA neutral — no directional bias")
             signal.strength = "BLOCKED"
             signal.velocity_data = compute_velocity(candles_1h)
             signal.time_context = get_time_context()
             signal.macro_context = self.macro_calendar.get_macro_context()
             return signal
 
-        # ─── Step 3: Zone analysis ─────────────────────────────────────────
+        # ─── Step 3: 1h and 3m must agree with 6h direction ────────────────
+        ha_1h_ok = signal.ha_1h_color == signal.ha_6h_color
+        ha_3m_ok = (not ha_3m) or (signal.ha_3m_color == signal.ha_6h_color)
+
+        if not ha_1h_ok or not ha_3m_ok:
+            signal.block_reasons.append(
+                f"HA not aligned: 3m={signal.ha_3m_color}, 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color}"
+            )
+            signal.direction = candidate_direction
+            signal.strength = "BLOCKED"
+            signal.velocity_data = compute_velocity(candles_1h)
+            signal.time_context = get_time_context()
+            signal.macro_context = self.macro_calendar.get_macro_context()
+            return signal
+
+        # ─── Step 4: Zone analysis ─────────────────────────────────────────
         zone_key = get_zone_key(current_price, settings.zone_size_usd)
         zone_position = get_zone_position(current_price, settings.zone_size_usd)
         signal.zone_key = zone_key
@@ -341,19 +367,98 @@ class SignalEngine:
             signal.strength = "BLOCKED"
             return signal
 
+        # ─── Step 8.8: MII primary trigger gate ──────────────────────────
+        # Market Imbalance Index is our primary entry trigger.
+        # Must confirm direction: > +threshold for LONG, < -threshold for SHORT.
+        mii = hyblock_data.get("market_imbalance_index", 0.0)
+        _mii_threshold = settings.mii_entry_threshold
+        if candidate_direction == "LONG" and mii < _mii_threshold:
+            signal.block_reasons.append(
+                f"MII {mii:+.2f} not bullish enough for LONG — need >{_mii_threshold:.2f}"
+            )
+            signal.direction = candidate_direction
+            signal.strength = "BLOCKED"
+            return signal
+        elif candidate_direction == "SHORT" and mii > -_mii_threshold:
+            signal.block_reasons.append(
+                f"MII {mii:+.2f} not bearish enough for SHORT — need <-{_mii_threshold:.2f}"
+            )
+            signal.direction = candidate_direction
+            signal.strength = "BLOCKED"
+            return signal
+
+        # ─── Step 8.9: Liq cluster gate ──────────────────────────────────
+        # Must have a liquidation cluster in trade direction:
+        #   - within liq_cluster_max_pct % of current price
+        #   - at least min_liq_cluster_btc BTC (filters noise)
+        # The nearest cluster price becomes the take-profit target.
+        _min_btc = settings.min_liq_cluster_btc
+        _max_pct  = settings.liq_cluster_max_pct
+        liq_clusters = hyblock_data.get("liq_clusters", {})
+
+        if candidate_direction == "LONG":
+            _above_size  = liq_clusters.get("above_size", 0.0) or 0.0
+            _above_pct   = liq_clusters.get("above_pct")
+            _above_price = liq_clusters.get("above_price")
+            _ok = (
+                _above_pct is not None
+                and _above_pct <= _max_pct
+                and _above_size >= _min_btc
+            )
+            if not _ok:
+                signal.block_reasons.append(
+                    f"Liq cluster gate: {_above_size:.0f} BTC at "
+                    f"{_above_pct}% above — need >={_min_btc:.0f} BTC within {_max_pct:.1f}%"
+                )
+                signal.direction = candidate_direction
+                signal.strength = "BLOCKED"
+                return signal
+            signal.liq_target_price = _above_price
+
+        elif candidate_direction == "SHORT":
+            _below_size  = liq_clusters.get("below_size", 0.0) or 0.0
+            _below_pct   = liq_clusters.get("below_pct")
+            _below_price = liq_clusters.get("below_price")
+            _ok = (
+                _below_pct is not None
+                and _below_pct <= _max_pct
+                and _below_size >= _min_btc
+            )
+            if not _ok:
+                signal.block_reasons.append(
+                    f"Liq cluster gate: {_below_size:.0f} BTC at "
+                    f"{_below_pct}% below — need >={_min_btc:.0f} BTC within {_max_pct:.1f}%"
+                )
+                signal.direction = candidate_direction
+                signal.strength = "BLOCKED"
+                return signal
+            signal.liq_target_price = _below_price
+
         # ─── Step 9: Calculate confidence score ───────────────────────────
         score = 50.0  # Base
         _breakdown: list[str] = ["base=50"]
 
-        # HA alignment bonus
-        if signal.ha_6h_trend in ("STRONG_BULLISH", "STRONG_BEARISH"):
-            score += 20.0
-            _breakdown.append(f"HA_trend={signal.ha_6h_trend}(+20)")
-        elif signal.ha_6h_trend in ("BULLISH", "BEARISH"):
-            score += 10.0
-            _breakdown.append(f"HA_trend={signal.ha_6h_trend}(+10)")
-        else:
-            _breakdown.append(f"HA_trend={signal.ha_6h_trend}(+0)")
+        # HA trend bonus — direction-aware: trend must match the trade direction
+        _trend = signal.ha_6h_trend
+        _bullish_trend = _trend in ("STRONG_BULLISH", "BULLISH")
+        _bearish_trend = _trend in ("STRONG_BEARISH", "BEARISH")
+        _strong = _trend in ("STRONG_BULLISH", "STRONG_BEARISH")
+        if candidate_direction == "LONG":
+            if _bullish_trend:
+                ha_pts = 20.0 if _strong else 10.0
+            elif _bearish_trend:
+                ha_pts = -10.0 if _strong else -5.0  # contra-trend scalp — reduce confidence
+            else:
+                ha_pts = 0.0
+        else:  # SHORT
+            if _bearish_trend:
+                ha_pts = 20.0 if _strong else 10.0
+            elif _bullish_trend:
+                ha_pts = -10.0 if _strong else -5.0
+            else:
+                ha_pts = 0.0
+        score += ha_pts
+        _breakdown.append(f"HA_trend={_trend}({ha_pts:+.0f})")
 
         # Zone position bonus
         if (candidate_direction == "SHORT" and zone_position == "TOP"):
@@ -441,12 +546,15 @@ class SignalEngine:
         # ─── Final: Build entry reason ────────────────────────────────────
         signal.direction = candidate_direction
         signal.should_trade = True
+        _liq_target_str = (
+            f"${signal.liq_target_price:,.0f}" if signal.liq_target_price else "none"
+        )
         signal.entry_reason = (
-            f"{candidate_direction} signal | Zone: {zone_key} ({zone_position}) | "
-            f"HA: 6h={signal.ha_6h_color} 1h={signal.ha_1h_color} | "
-            f"Confidence: {score:.0f}% | "
-            f"Funding: {funding_analysis.get('average_rate', 0)*100:.3f}% | "
-            f"Size modifier: {signal.position_size_modifier:.2f}x"
+            f"{candidate_direction} | MII={mii:+.2f} | "
+            f"HA: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color} | "
+            f"LiqTarget={_liq_target_str} | Zone={zone_key} ({zone_position}) | "
+            f"Confidence={score:.0f}% | Funding={funding_analysis.get('average_rate', 0)*100:.3f}% | "
+            f"Size={signal.position_size_modifier:.2f}x"
         )
 
         # Record the zone signal
