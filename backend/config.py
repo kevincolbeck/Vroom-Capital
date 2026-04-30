@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     # Liq cluster scalping entry gates
     mii_entry_threshold: float = Field(default=0.3)       # MII must exceed ±this to enter
-    min_liq_cluster_btc: float = Field(default=50.0)      # cluster must have ≥ this BTC to count
+    min_liq_cluster_btc: float = Field(default=300.0)     # nearest single cluster must have ≥ this BTC to count
     liq_cluster_max_pct: float = Field(default=2.0)       # cluster must be within this % of price
     fomc_caution_days: int = Field(default=7)
 

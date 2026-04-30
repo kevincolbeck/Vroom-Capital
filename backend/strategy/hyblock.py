@@ -331,21 +331,22 @@ class HyblockMonitor:
                 warnings.append("sell-dominant volume — contradicts LONG")
 
         # ── Liquidation cluster proximity (price magnets) ─────────────────────
-        # Tier: <10 BTC = ignore noise, 10-100 BTC = +3, 100-500 BTC = +5, >500 BTC = +8
-        MIN_LIQ_BTC = 10.0
+        # Uses nearest single cluster size (not sum of all clusters above/below).
+        # Tier: <300 BTC = noise, 300-1000 BTC = +3, 1000-3000 BTC = +5, >3000 BTC = +8
+        MIN_LIQ_BTC = settings.min_liq_cluster_btc
         liq = data.get("liq_clusters", {})
         if direction == "LONG":
             above_pct  = liq.get("above_pct")
             above_size = liq.get("above_size", 0.0) or 0.0
             if above_pct is not None and above_size >= MIN_LIQ_BTC:
-                liq_pts = 8.0 if above_size > 500 else 5.0 if above_size > 100 else 3.0
+                liq_pts = 8.0 if above_size > 3000 else 5.0 if above_size > 1000 else 3.0
                 score += liq_pts
                 notes.append(f"liq cluster {above_pct}% above ({above_size:.0f} BTC magnet +{liq_pts:.0f})")
         elif direction == "SHORT":
             below_pct  = liq.get("below_pct")
             below_size = liq.get("below_size", 0.0) or 0.0
             if below_pct is not None and below_size >= MIN_LIQ_BTC:
-                liq_pts = 8.0 if below_size > 500 else 5.0 if below_size > 100 else 3.0
+                liq_pts = 8.0 if below_size > 3000 else 5.0 if below_size > 1000 else 3.0
                 score += liq_pts
                 notes.append(f"liq cluster {below_pct}% below ({below_size:.0f} BTC magnet +{liq_pts:.0f})")
 
@@ -582,15 +583,17 @@ class HyblockMonitor:
         below_levels = [(get_px(l), get_size(l)) for l in levels if 0 < get_px(l) < current_price]
 
         if above_levels:
-            px = min(p for p, _ in above_levels)
-            above_price_val = round(px, 2)
-            above_pct  = round((px - current_price) / current_price * 100, 2)
-            above_size = round(sum(s for _, s in above_levels), 2)
+            # Nearest cluster above — use its individual size, not the sum of all clusters
+            nearest_above = min(above_levels, key=lambda x: x[0])
+            above_price_val = round(nearest_above[0], 2)
+            above_pct  = round((nearest_above[0] - current_price) / current_price * 100, 2)
+            above_size = round(nearest_above[1], 2)
         if below_levels:
-            px = max(p for p, _ in below_levels)
-            below_price_val = round(px, 2)
-            below_pct  = round((current_price - px) / current_price * 100, 2)
-            below_size = round(sum(s for _, s in below_levels), 2)
+            # Nearest cluster below — use its individual size, not the sum of all clusters
+            nearest_below = max(below_levels, key=lambda x: x[0])
+            below_price_val = round(nearest_below[0], 2)
+            below_pct  = round((current_price - nearest_below[0]) / current_price * 100, 2)
+            below_size = round(nearest_below[1], 2)
 
         if above_pct is not None and below_pct is not None:
             nearest_side = "ABOVE" if above_pct < below_pct else "BELOW"
