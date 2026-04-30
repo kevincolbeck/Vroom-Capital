@@ -110,15 +110,14 @@ function SignalIndicator({ signal }: { signal: any }) {
             <span className="text-gray-500">MII</span>
             <div className="flex items-center gap-1.5">
               <span className={clsx('font-mono font-medium',
-                signal.hyblock.market_imbalance_index > 0 ? 'text-profit' : 'text-loss'
+                signal.hyblock.market_imbalance_index > 0.3 ? 'text-profit' :
+                signal.hyblock.market_imbalance_index < -0.3 ? 'text-loss' : 'text-gray-400'
               )}>
                 {signal.hyblock.market_imbalance_index > 0 ? '+' : ''}{signal.hyblock.market_imbalance_index?.toFixed(3)}
               </span>
-              {signal.hyblock.mii_sustained_bars > 0 && (
-                <span className="text-gray-500 font-mono text-[10px]">
-                  {signal.hyblock.mii_sustained_bars}h sustained
-                </span>
-              )}
+              <span className="text-gray-600 font-mono text-[10px]">
+                {signal.hyblock.mii_sustained_bars ?? 0}h sustained
+              </span>
             </div>
           </div>
         )}
