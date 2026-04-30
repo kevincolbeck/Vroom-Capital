@@ -19,7 +19,8 @@ ALL_EXCHANGES = (
     "hyperliquid_perp_stable,coinbaseadvanced_perp_stable,deribit_perp_stable,"
     "bitfinex_perp_stable,phemex_perp_stable,arkham_perp_stable"
 )
-MII_EXCHANGES = ALL_EXCHANGES
+# MII confirmed working on 4 major stable perps (others return 422)
+MII_EXCHANGES = "binance_perp_stable,bybit_perp_stable,okx_perp_stable,bitget_perp_stable"
 # Full OI exchange list — 17 exchanges (Hyblock openInterest endpoint defaults)
 OI_EXCHANGES = (
     "bitmex_perp_coin,bybit_perp_coin,bitfinex_perp_stable,deribit_perp_stable,"
@@ -164,10 +165,10 @@ class HyblockMonitor:
         p_ts       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1h", "limit": 5}
         # averageLeverageUsed only works on OKX
         p_lev      = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
-        # MII: cross-exchange aggregate (stable perps)
-        p_mii      = {"coin": COIN, "exchange": ALL_EXCHANGES, "timeframe": "15m", "limit": 5}
-        # Liquidation heatmap: multi-exchange confirmed (stable perps)
-        p_liq_heat = {"coin": COIN, "exchange": ALL_EXCHANGES}
+        # MII: cross-exchange aggregate (4 confirmed-working stable perps)
+        p_mii      = {"coin": COIN, "exchange": MII_EXCHANGES, "timeframe": "15m", "limit": 5}
+        # Liquidation heatmap: spec default exchanges (others return 422)
+        p_liq_heat = {"coin": COIN, "exchange": "binance_perp_stable,bitmex_perp_coin,bybit_perp_coin"}
         # Orderflow: multi-exchange perpetuals (volumeDelta, volumeRatio, buySellTradeCountRatio)
         p_flow     = {"coin": COIN, "timeframe": "1h", "limit": 5, "marketTypes": "perpetuals"}
         # CVD: 20 bars of volumeDelta, multi-exchange perpetuals
