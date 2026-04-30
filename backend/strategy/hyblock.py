@@ -14,6 +14,8 @@ from backend.config import settings
 
 COIN = "BTC"
 EXCHANGE = "binance_perp_stable"
+# MII uses a broader cross-exchange view for a more complete market pressure picture
+MII_EXCHANGES = "binance_perp_stable,bybit_perp_stable,okx_perp_stable,bitget_perp_stable"
 DEPTH_LEVELS = [1, 2, 5, 10]
 CACHE_TTL_SECONDS = 60
 TOKEN_TTL_SECONDS = 82800   # refresh 1h before the 24h expiry
@@ -145,6 +147,8 @@ class HyblockMonitor:
         p_ts = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 5}
         # averageLeverageUsed only works on OKX (not binance_perp_stable)
         p_lev = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
+        # MII: multi-exchange, fetch all 5 bars (not just latest) for sustained analysis
+        p_mii = {"coin": COIN, "exchange": MII_EXCHANGES, "timeframe": "1h", "limit": 5}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -166,7 +170,7 @@ class HyblockMonitor:
                 self._fetch(client, "whaleRetailDelta",       p_ts,   unwrap_latest=True),
                 self._fetch(client, "volumeDelta",            p_ts,   unwrap_latest=True),
                 self._fetch(client, "fundingRate",            p_ts,   unwrap_latest=True),
-                self._fetch(client, "marketImbalanceIndex",   p_ts,   unwrap_latest=True),
+                self._fetch(client, "marketImbalanceIndex",   p_mii,  unwrap_latest=False),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -210,10 +214,8 @@ class HyblockMonitor:
             # Liquidations
             "liq_clusters": liq_clusters,
             "oi_trend": oi_trend,
-            # Market Imbalance Index (-1 to 1): combines orderflow + orderbook pressure
-            "market_imbalance_index": float(
-                raw["market_imbalance"].get("marketImbalanceIndex", 0.0)
-            ),
+            # Market Imbalance Index: cross-exchange, latest value + sustained bars
+            **self._parse_mii(raw["market_imbalance"]),
             # Useful raw snippets for the dashboard
             "funding_rate_raw": float(raw["funding"].get("fundingRate", raw["funding"].get("rate", 0.0))),
             "avg_leverage_raw": (
@@ -225,6 +227,34 @@ class HyblockMonitor:
         }
         self._set_cached(cache_key, result)
         return result
+
+    def _parse_mii(self, raw_response: Dict) -> Dict:
+        """
+        Parse the full MII response (5 bars) into:
+          market_imbalance_index  — latest bar value (-1 to +1)
+          mii_sustained_bars      — consecutive hours the latest reading has held
+                                    above mii_entry_threshold in the same direction
+        """
+        bars = raw_response.get("data", []) if isinstance(raw_response, dict) else []
+        if not bars:
+            return {"market_imbalance_index": 0.0, "mii_sustained_bars": 0}
+
+        values = [float(b.get("marketImbalanceIndex", 0.0)) for b in bars]
+        latest = values[-1]
+        threshold = settings.mii_entry_threshold
+        sign = 1.0 if latest >= 0 else -1.0
+
+        sustained = 0
+        for v in reversed(values):
+            if sign * v >= threshold:
+                sustained += 1
+            else:
+                break
+
+        return {
+            "market_imbalance_index": round(latest, 4),
+            "mii_sustained_bars": sustained,
+        }
 
     def get_trade_context(
         self, direction: str, data: Dict
@@ -350,31 +380,45 @@ class HyblockMonitor:
                 score += liq_pts
                 notes.append(f"liq cluster {below_pct}% below ({below_size:.0f} BTC magnet +{liq_pts:.0f})")
 
-        # ── Market Imbalance Index (replaces whale wall approximation) ───────────
-        # Combines futures orderflow + orderbook pressure; -1 (sellers) to +1 (buyers)
+        # ── Market Imbalance Index ────────────────────────────────────────────
+        # Combines cross-exchange orderflow + orderbook pressure; -1 to +1
+        # Current bar: entry pressure (what is happening right now)
+        # Sustained bars: how many consecutive hours MII has held above threshold
         mii = data.get("market_imbalance_index", 0.0)
+        mii_sustained = data.get("mii_sustained_bars", 0)
+
         if mii > 0.3:
             if direction == "LONG":
                 score += 6.0
-                notes.append(f"market imbalance strongly bullish ({mii:+.2f})")
+                notes.append(f"MII bullish ({mii:+.2f})")
             else:
                 score -= 4.0
-                warnings.append(f"market imbalance bullish ({mii:+.2f}) — contradicts SHORT")
+                warnings.append(f"MII bullish ({mii:+.2f}) — contradicts SHORT")
         elif mii > 0.1:
             if direction == "LONG":
                 score += 3.0
-                notes.append(f"market imbalance mildly bullish ({mii:+.2f})")
+                notes.append(f"MII mildly bullish ({mii:+.2f})")
         elif mii < -0.3:
             if direction == "SHORT":
                 score += 6.0
-                notes.append(f"market imbalance strongly bearish ({mii:+.2f})")
+                notes.append(f"MII bearish ({mii:+.2f})")
             else:
                 score -= 4.0
-                warnings.append(f"market imbalance bearish ({mii:+.2f}) — contradicts LONG")
+                warnings.append(f"MII bearish ({mii:+.2f}) — contradicts LONG")
         elif mii < -0.1:
             if direction == "SHORT":
                 score += 3.0
-                notes.append(f"market imbalance mildly bearish ({mii:+.2f})")
+                notes.append(f"MII mildly bearish ({mii:+.2f})")
+
+        # Sustained pressure bonus — persistent multi-hour imbalance adds conviction
+        mii_confirms = (direction == "LONG" and mii > 0) or (direction == "SHORT" and mii < 0)
+        if mii_confirms:
+            if mii_sustained >= 3:
+                score += 10.0
+                notes.append(f"MII sustained {mii_sustained}h (+10)")
+            elif mii_sustained == 2:
+                score += 5.0
+                notes.append(f"MII sustained {mii_sustained}h (+5)")
 
         # ── Fragility ─────────────────────────────────────────────────────────
         # Skip if MII already shows directional pressure — avoid double-counting
