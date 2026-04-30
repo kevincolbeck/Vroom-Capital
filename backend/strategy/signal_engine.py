@@ -161,35 +161,31 @@ class SignalEngine:
                     break
             signal.ha_1h_consecutive = _streak
 
-        # ─── Step 2: Direction from 6h forming candle ──────────────────────
-        if signal.ha_6h_color == "GREEN":
+        # ─── Step 2: Direction by majority vote across 6h / 1h / 3m ──────────
+        # 2-of-3 is enough; whichever color has the majority wins.
+        _ha_colors = [signal.ha_6h_color, signal.ha_1h_color]
+        if ha_3m:
+            _ha_colors.append(signal.ha_3m_color)
+        _green_votes = _ha_colors.count("GREEN")
+        _red_votes   = _ha_colors.count("RED")
+
+        if _green_votes > _red_votes:
             candidate_direction = "LONG"
-        elif signal.ha_6h_color == "RED":
+        elif _red_votes > _green_votes:
             candidate_direction = "SHORT"
         else:
-            signal.block_reasons.append("6h HA neutral — no directional bias")
-            signal.strength = "BLOCKED"
-            signal.velocity_data = compute_velocity(candles_1h)
-            signal.macro_context = self.macro_calendar.get_macro_context()
-            return signal
-
-        # ─── Step 3: 1h and 3m must agree with 6h direction ────────────────
-        ha_1h_ok = signal.ha_1h_color == signal.ha_6h_color
-        ha_3m_ok = (not ha_3m) or (signal.ha_3m_color == signal.ha_6h_color)
-
-        if not ha_1h_ok or not ha_3m_ok:
             signal.block_reasons.append(
-                f"HA not aligned: 3m={signal.ha_3m_color}, 1h={signal.ha_1h_color}, 6h={signal.ha_6h_color}"
+                f"HA split — no majority: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
             )
-            logger.info(
-                f"[{candidate_direction}] BLOCKED — HA misalign: "
-                f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
-            )
-            signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             signal.velocity_data = compute_velocity(candles_1h)
             signal.macro_context = self.macro_calendar.get_macro_context()
             return signal
+
+        logger.info(
+            f"[{candidate_direction}] HA majority ({max(_green_votes, _red_votes)}/{len(_ha_colors)}): "
+            f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
+        )
 
         # ─── Step 4: Zone analysis ─────────────────────────────────────────
         zone_key = get_zone_key(current_price, settings.zone_size_usd)
