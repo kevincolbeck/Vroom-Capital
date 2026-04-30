@@ -855,15 +855,19 @@ class HyblockMonitor:
             return 0.0
 
         def get_size(l: Dict) -> float:
-            # Sum long + short liquidation size; fall back to generic size fields
+            # btcSize is already denominated in BTC — return directly
+            btc = l.get("btcSize")
+            if btc is not None:
+                return float(btc)
+            # All other size fields are in USD — convert to BTC
             long_s  = l.get("longLiquidationSize",  l.get("longSize",  0.0)) or 0.0
             short_s = l.get("shortLiquidationSize", l.get("shortSize", 0.0)) or 0.0
             if long_s or short_s:
-                return float(long_s) + float(short_s)
-            for key in ("liquidationSize", "size", "btcSize", "totalSize", "notional"):
+                return (float(long_s) + float(short_s)) / current_price
+            for key in ("liquidationSize", "size", "totalSize", "notional"):
                 v = l.get(key)
                 if v is not None:
-                    return float(v)
+                    return float(v) / current_price
             return 0.0
 
         above_pct = above_size = above_price_val = None
@@ -963,11 +967,15 @@ class HyblockMonitor:
             if px <= 0:
                 continue
             side = lv.get("side", "")
-            # API returns size in USD; fall back to long/short-specific fields for older shapes
-            size = float(lv.get("size", 0.0) or 0.0)
-            if not size:
-                size = float(lv.get("longLiquidations", lv.get("longLiquidationSize",
-                    lv.get("shortLiquidations", lv.get("shortLiquidationSize", 0.0)))) or 0.0)
+            # API returns size in USD — convert to BTC; btcSize is already BTC
+            raw_size = float(lv.get("btcSize", 0.0) or 0.0)
+            if not raw_size:
+                usd = float(lv.get("size", 0.0) or 0.0)
+                if not usd:
+                    usd = float(lv.get("longLiquidations", lv.get("longLiquidationSize",
+                        lv.get("shortLiquidations", lv.get("shortLiquidationSize", 0.0)))) or 0.0)
+                raw_size = usd / current_price if current_price > 0 else 0.0
+            size = raw_size
 
             is_long_cluster  = (side == "long")  or (not side and px < current_price)
             is_short_cluster = (side == "short") or (not side and px > current_price)
