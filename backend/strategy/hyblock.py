@@ -13,9 +13,26 @@ from loguru import logger
 from backend.config import settings
 
 COIN = "BTC"
-EXCHANGE = "binance_perp_stable"
-# MII uses a broader cross-exchange view for a more complete market pressure picture
-MII_EXCHANGES = "binance_perp_stable,bybit_perp_stable,okx_perp_stable,bitget_perp_stable"
+# Stable-margined perp exchanges supporting BTC (used for MII and liq heatmap)
+ALL_EXCHANGES = (
+    "binance_perp_stable,bybit_perp_stable,okx_perp_stable,bitget_perp_stable,"
+    "hyperliquid_perp_stable,coinbaseadvanced_perp_stable,deribit_perp_stable,"
+    "bitfinex_perp_stable,phemex_perp_stable,arkham_perp_stable"
+)
+MII_EXCHANGES = ALL_EXCHANGES
+# Full OI exchange list — 17 exchanges (Hyblock openInterest endpoint defaults)
+OI_EXCHANGES = (
+    "bitmex_perp_coin,bybit_perp_coin,bitfinex_perp_stable,deribit_perp_stable,"
+    "phemex_perp_stable,huobi_perp_coin,okx_perp_coin,okx_qtrly,binance_perp_stable,"
+    "binance_perp_coin,arkham_perp_stable,bybit_perp_stable,bitget_perp_stable,"
+    "bitget_perp_coin,okx_perp_stable,hyperliquid_perp_stable,hyperliquid_xyz"
+)
+# Net L/S positioning exchanges — 10 exchanges (Hyblock netLongShortDelta defaults)
+NLS_EXCHANGES = (
+    "bitmex_perp_coin,bybit_perp_coin,binance_perp_stable,binance_perp_coin,"
+    "bybit_perp_stable,bitget_perp_stable,bitget_perp_coin,okx_perp_stable,"
+    "okx_perp_coin,okx_qtrly"
+)
 DEPTH_LEVELS = [1, 2, 5, 10]
 CACHE_TTL_SECONDS = 60
 TOKEN_TTL_SECONDS = 82800   # refresh 1h before the 24h expiry
@@ -141,18 +158,28 @@ class HyblockMonitor:
         if not settings.hyblock_api_key:
             return {"available": False, "reason": "No Hyblock API key configured"}
 
-        # Snapshot endpoints: no timeframe param accepted
-        p_snap = {"coin": COIN, "exchange": EXCHANGE}
-        # Time-series endpoints: valid limit values are 5, 10, 20, 50, 100, 500, 1000
-        p_ts = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 5}
-        # averageLeverageUsed only works on OKX (not binance_perp_stable)
-        p_lev = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
-        # MII: 15m bars for real-time pressure detection (1h was stale, only updated hourly)
-        p_mii = {"coin": COIN, "exchange": MII_EXCHANGES, "timeframe": "15m", "limit": 5}
-        # CVD: 20 bars to compute cumulative direction pressure
-        p_cvd = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 20}
-        # OI multi-bar: 5 bars for rate-of-change direction
-        p_oi_multi = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 5}
+        # Single-exchange snapshots (liq levels, cumulative liq — single-only APIs)
+        p_snap     = {"coin": COIN, "exchange": "binance_perp_stable"}
+        # Single-exchange time-series (OB, whale, retail, top traders, liq oscillators, funding — single-only APIs)
+        p_ts       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1h", "limit": 5}
+        # averageLeverageUsed only works on OKX
+        p_lev      = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
+        # MII: cross-exchange aggregate (stable perps)
+        p_mii      = {"coin": COIN, "exchange": ALL_EXCHANGES, "timeframe": "15m", "limit": 5}
+        # Liquidation heatmap: multi-exchange confirmed (stable perps)
+        p_liq_heat = {"coin": COIN, "exchange": ALL_EXCHANGES}
+        # Orderflow: multi-exchange perpetuals (volumeDelta, volumeRatio, buySellTradeCountRatio)
+        p_flow     = {"coin": COIN, "timeframe": "1h", "limit": 5, "marketTypes": "perpetuals"}
+        # CVD: 20 bars of volumeDelta, multi-exchange perpetuals
+        p_cvd      = {"coin": COIN, "timeframe": "1h", "limit": 20, "marketTypes": "perpetuals"}
+        # OI: 17-exchange aggregate
+        p_oi       = {"coin": COIN, "exchange": OI_EXCHANGES, "timeframe": "1h", "limit": 5}
+        # OI multi-bar: 5 bars for rate-of-change, 17-exchange aggregate
+        p_oi_multi = {"coin": COIN, "exchange": OI_EXCHANGES, "timeframe": "1h", "limit": 5}
+        # Net L/S delta: 10-exchange aggregate
+        p_nls      = {"coin": COIN, "exchange": NLS_EXCHANGES, "timeframe": "1h", "limit": 5}
+        # 4H compression detection (Binance is price reference)
+        p_4h       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "4h", "limit": 20}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -165,33 +192,41 @@ class HyblockMonitor:
                 "volume_ratio", "buy_sell_count",
                 # CVD and OI multi-bar (full response, not unwrapped)
                 "volume_delta_multi", "oi_multi",
+                # WarriorAI-aligned signals
+                "true_retail", "global_accts", "net_ls_delta", "prev_day", "kline_4h",
             ]
             coros = [
-                self._fetch(client, "bidAsk",                 p_ts,   unwrap_latest=True),
-                self._fetch(client, "bidsIncreaseDecrease",   p_ts,   unwrap_latest=True),
-                self._fetch(client, "asksIncreaseDecrease",   p_ts,   unwrap_latest=True),
-                self._fetch(client, "liquidationHeatmap",     p_snap),  # snapshot only
-                self._fetch(client, "cumulativeLiqLevel",     p_snap),  # snapshot only
-                self._fetch(client, "openInterest",           p_ts,   unwrap_latest=True),
-                self._fetch(client, "averageLeverageUsed",    p_lev,  unwrap_latest=True),
-                self._fetch(client, "topTraderPositions",     p_ts,   unwrap_latest=True),
-                self._fetch(client, "topTraderAccounts",      p_ts,   unwrap_latest=True),
-                self._fetch(client, "whaleRetailDelta",       p_ts,   unwrap_latest=True),
-                self._fetch(client, "volumeDelta",            p_ts,   unwrap_latest=True),
-                self._fetch(client, "fundingRate",            p_ts,   unwrap_latest=True),
-                self._fetch(client, "marketImbalanceIndex",   p_mii,  unwrap_latest=False),
-                # Exact per-price liquidation levels (snapshot)
+                self._fetch(client, "bidAsk",                 p_ts,       unwrap_latest=True),
+                self._fetch(client, "bidsIncreaseDecrease",   p_ts,       unwrap_latest=True),
+                self._fetch(client, "asksIncreaseDecrease",   p_ts,       unwrap_latest=True),
+                self._fetch(client, "liquidationHeatmap",     p_liq_heat),           # multi-exchange
+                self._fetch(client, "cumulativeLiqLevel",     p_snap,     unwrap_latest=True),   # single-only
+                self._fetch(client, "openInterest",           p_oi,       unwrap_latest=True),   # multi-exchange
+                self._fetch(client, "averageLeverageUsed",    p_lev,      unwrap_latest=True),
+                self._fetch(client, "topTraderPositions",     p_ts,       unwrap_latest=True),
+                self._fetch(client, "topTraderAccounts",      p_ts,       unwrap_latest=True),
+                self._fetch(client, "whaleRetailDelta",       p_ts,       unwrap_latest=True),
+                self._fetch(client, "volumeDelta",            p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
+                self._fetch(client, "fundingRate",            p_ts,       unwrap_latest=True),
+                self._fetch(client, "marketImbalanceIndex",   p_mii,      unwrap_latest=False),
+                # Exact per-price liquidation levels (snapshot, single-only API)
                 self._fetch(client, "liquidationLevels",      p_snap),
-                # Liq level size/count delta oscillators
-                self._fetch(client, "liqLevelsSize",          p_ts,   unwrap_latest=True),
-                self._fetch(client, "liqLevelsCount",         p_ts,   unwrap_latest=True),
-                # Volume ratio and buy/sell trade count ratio (-1 to +1)
-                self._fetch(client, "volumeRatio",            p_ts,   unwrap_latest=True),
-                self._fetch(client, "buySellTradeCountRatio", p_ts,   unwrap_latest=True),
-                # CVD: 20 bars of volumeDelta (full response, not unwrapped)
-                self._fetch(client, "volumeDelta",            p_cvd,  unwrap_latest=False),
-                # OI multi-bar: 5 bars for rate-of-change
+                # Liq level size/count delta oscillators (single-only APIs)
+                self._fetch(client, "liqLevelsSize",          p_ts,       unwrap_latest=True),
+                self._fetch(client, "liqLevelsCount",         p_ts,       unwrap_latest=True),
+                # Volume ratio and buy/sell trade count ratio — multi-exchange perpetuals
+                self._fetch(client, "volumeRatio",            p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
+                self._fetch(client, "buySellTradeCountRatio", p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
+                # CVD: 20 bars of volumeDelta, multi-exchange perpetuals
+                self._fetch(client, "volumeDelta",            p_cvd,      unwrap_latest=False),
+                # OI multi-bar: 5 bars for rate-of-change, 17-exchange aggregate
                 self._fetch(client, "openInterest",           p_oi_multi, unwrap_latest=False),
+                # WarriorAI-aligned: retail/global L/S (single-only), net positioning, PDH/PDL, 4H compression
+                self._fetch(client, "trueRetailLongShort",    p_ts,       unwrap_latest=True),
+                self._fetch(client, "globalAccounts",         p_ts,       unwrap_latest=True),
+                self._fetch(client, "netLongShortDelta",      p_nls,      unwrap_latest=True),   # multi-exchange
+                self._fetch(client, "pdLevels",               p_ts,       unwrap_latest=True),
+                self._fetch(client, "klines",                 p_4h,       unwrap_latest=False),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -213,10 +248,16 @@ class HyblockMonitor:
         liq_levels = self._parse_liq_levels(raw["liq_levels"], current_price)
         volume_ratio = self._parse_scalar(raw["volume_ratio"], ("volumeRatio", "ratio", "value", "delta"))
         buy_sell_count = self._parse_scalar(raw["buy_sell_count"], ("buySellTradeCountRatio", "ratio", "value", "delta"))
-        liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
+        liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelSizeDelta", "liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
         liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelsCountDelta", "countDelta", "delta", "value"))
         cvd = self._parse_cvd(raw["volume_delta_multi"])
         oi_delta = self._parse_oi_delta(raw["oi_multi"])
+        cumulative_liq_detail = self._parse_cumulative_liq_detail(raw["cumulative_liq"])
+        true_retail = self._parse_retail_ratio(raw["true_retail"])
+        global_accts = self._parse_retail_ratio(raw["global_accts"])
+        net_ls_delta = self._parse_net_ls_delta(raw["net_ls_delta"])
+        prev_day = self._parse_prev_day_structure(raw["prev_day"], current_price)
+        compression = self._parse_4h_compression(raw["kline_4h"])
 
         result = {
             "available": True,
@@ -252,6 +293,20 @@ class HyblockMonitor:
             "liq_levels_count_delta": liq_levels_count,
             "cvd": cvd,
             "oi_delta_pct": oi_delta,
+            # Cumulative liq zone exposure (long vs short $ outstanding)
+            **cumulative_liq_detail,
+            # True retail + global accounts L/S positioning
+            "true_retail_long_pct": true_retail["long_pct"],
+            "true_retail_short_pct": true_retail["short_pct"],
+            "global_accounts_long_pct": global_accts["long_pct"],
+            "global_accounts_short_pct": global_accts["short_pct"],
+            # Net long/short delta (overall positioning imbalance)
+            "net_ls_delta": net_ls_delta,
+            # Previous day levels + structure
+            **prev_day,
+            # 4H compression / volatility expansion detection
+            "is_compressed": compression["is_compressed"],
+            "compression_ratio": compression["compression_ratio"],
             # Useful raw snippets for the dashboard
             "funding_rate_raw": float(raw["funding"].get("fundingRate", raw["funding"].get("rate", 0.0))),
             "avg_leverage_raw": (
@@ -547,6 +602,91 @@ class HyblockMonitor:
             score -= 3.0
             warnings.append("MEDIUM cascade risk")
 
+        # ── Cumulative liquidation zone bias ──────────────────────────────────
+        # Total predicted short liq > long liq → more shorts will be forced to
+        # buy back → upward cascade pressure → confirms LONG (and vice versa).
+        cum_bias = data.get("cumulative_liq_bias", "BALANCED")
+        if cum_bias == "SHORT_HEAVY":
+            if direction == "LONG":
+                score += 8.0
+                notes.append(f"liq zone SHORT-heavy (short squeeze fuel +8)")
+            else:
+                score -= 4.0
+                warnings.append("liq zone SHORT-heavy — contradicts SHORT")
+        elif cum_bias == "LONG_HEAVY":
+            if direction == "SHORT":
+                score += 8.0
+                notes.append(f"liq zone LONG-heavy (long cascade fuel +8)")
+            else:
+                score -= 4.0
+                warnings.append("liq zone LONG-heavy — contradicts LONG")
+
+        # ── True retail positioning (contrarian) ──────────────────────────────
+        # Retail > 60% long → crowded long trade → fade = confirms SHORT
+        # Retail > 60% short → crowded short → squeeze setup = confirms LONG
+        retail_long = float(data.get("true_retail_long_pct") or 50.0)
+        if retail_long > 60.0:
+            if direction == "SHORT":
+                score += 8.0
+                notes.append(f"retail {retail_long:.1f}% long — crowded, fade confirms SHORT (+8)")
+            else:
+                score -= 5.0
+                warnings.append(f"retail {retail_long:.1f}% long — crowded LONG trade")
+        elif retail_long < 40.0:
+            if direction == "LONG":
+                score += 8.0
+                notes.append(f"retail {retail_long:.1f}% long — crowded short, squeeze confirms LONG (+8)")
+            else:
+                score -= 5.0
+                warnings.append(f"retail {retail_long:.1f}% long — crowded SHORT trade")
+        elif retail_long > 55.0:
+            if direction == "SHORT":
+                score += 3.0
+                notes.append(f"retail mildly long-leaning ({retail_long:.1f}%) — mild fade (+3)")
+        elif retail_long < 45.0:
+            if direction == "LONG":
+                score += 3.0
+                notes.append(f"retail mildly short-leaning ({retail_long:.1f}%) — mild squeeze (+3)")
+
+        # ── Net long/short delta (overall positioning imbalance) ──────────────
+        # Positive = more net longs outstanding (crowded → fade for LONG)
+        # Negative = more net shorts outstanding (crowded → squeeze for LONG)
+        nls = float(data.get("net_ls_delta") or 0.0)
+        if abs(nls) > 0.05:
+            nls_confirms = (direction == "LONG" and nls < 0) or (direction == "SHORT" and nls > 0)
+            if nls_confirms:
+                score += 5.0
+                notes.append(f"net L/S delta confirms {direction} ({nls:+.3f}, +5)")
+            else:
+                score -= 3.0
+                warnings.append(f"net L/S delta against {direction} ({nls:+.3f})")
+
+        # ── Previous day structure ─────────────────────────────────────────────
+        # Price accepted above PDH → bullish structural break → confirms LONG
+        # Price rejected below PDL → bearish break → confirms SHORT
+        pds = data.get("prev_day_structure", "BETWEEN")
+        if pds == "ABOVE_PDH":
+            if direction == "LONG":
+                score += 8.0
+                notes.append("price above PDH — bullish structure break (+8)")
+            else:
+                score -= 5.0
+                warnings.append("price above PDH — counter-trend SHORT")
+        elif pds == "BELOW_PDL":
+            if direction == "SHORT":
+                score += 8.0
+                notes.append("price below PDL — bearish structure break (+8)")
+            else:
+                score -= 5.0
+                warnings.append("price below PDL — counter-trend LONG")
+        else:
+            # Between PDH and PDL — neutral, small bonus for trading in PDO direction
+            above_pdo = data.get("prev_day_above_pdo")
+            if above_pdo is True and direction == "LONG":
+                score += 3.0
+            elif above_pdo is False and direction == "SHORT":
+                score += 3.0
+
         description = " | ".join(notes) if notes else "No strong Hyblock signals"
         return round(score, 1), description, warnings, should_block
 
@@ -821,20 +961,24 @@ class HyblockMonitor:
             px = _px(lv)
             if px <= 0:
                 continue
-            long_sz = float(
-                lv.get("longLiquidations", lv.get("longLiquidationSize", lv.get("longSize", 0.0))) or 0.0
-            )
-            short_sz = float(
-                lv.get("shortLiquidations", lv.get("shortLiquidationSize", lv.get("shortSize", 0.0))) or 0.0
-            )
-            if px < current_price:
+            side = lv.get("side", "")
+            # API returns size in USD; fall back to long/short-specific fields for older shapes
+            size = float(lv.get("size", 0.0) or 0.0)
+            if not size:
+                size = float(lv.get("longLiquidations", lv.get("longLiquidationSize",
+                    lv.get("shortLiquidations", lv.get("shortLiquidationSize", 0.0)))) or 0.0)
+
+            is_long_cluster  = (side == "long")  or (not side and px < current_price)
+            is_short_cluster = (side == "short") or (not side and px > current_price)
+
+            if is_long_cluster and px < current_price:
                 pct = (current_price - px) / current_price
-                if pct <= max_pct and long_sz >= min_btc:
-                    long_below.append((px, long_sz, pct))
-            elif px > current_price:
+                if pct <= max_pct and size >= min_btc:
+                    long_below.append((px, size, pct))
+            elif is_short_cluster and px > current_price:
                 pct = (px - current_price) / current_price
-                if pct <= max_pct and short_sz >= min_btc:
-                    short_above.append((px, short_sz, pct))
+                if pct <= max_pct and size >= min_btc:
+                    short_above.append((px, size, pct))
 
         best_long = max(long_below, key=lambda x: x[1]) if long_below else None
         best_short = max(short_above, key=lambda x: x[1]) if short_above else None
@@ -923,3 +1067,94 @@ class HyblockMonitor:
         if first_val <= 0:
             return 0.0
         return round((last_val - first_val) / first_val * 100, 2)
+
+    def _parse_cumulative_liq_detail(self, data: Dict) -> Dict:
+        """
+        Parse cumulative liq level snapshot into long/short exposure and directional bias.
+        SHORT_HEAVY = more shorts at risk of liquidation → price magnet UP → confirms LONG.
+        LONG_HEAVY  = more longs at risk               → price magnet DOWN → confirms SHORT.
+        """
+        long_sz  = float(data.get("totalLongLiquidationSize",  0.0) or 0.0)
+        short_sz = float(data.get("totalShortLiquidationSize", 0.0) or 0.0)
+        total    = long_sz + short_sz
+        if total > 0:
+            delta = short_sz - long_sz
+            ratio = delta / total  # positive = short-heavy
+            if ratio > 0.15:
+                bias = "SHORT_HEAVY"
+            elif ratio < -0.15:
+                bias = "LONG_HEAVY"
+            else:
+                bias = "BALANCED"
+        else:
+            delta = 0.0
+            bias  = "BALANCED"
+        return {
+            "cumulative_liq_long_size":  round(long_sz, 2),
+            "cumulative_liq_short_size": round(short_sz, 2),
+            "cumulative_liq_delta":      round(short_sz - long_sz, 2),
+            "cumulative_liq_bias":       bias,
+        }
+
+    def _parse_retail_ratio(self, data: Dict) -> Dict:
+        """Parse long/short percentage from trueRetailLongShort or globalAccounts."""
+        long_pct  = float(data.get("longPct",  data.get("long_pct",  data.get("longAccount",  50.0))) or 50.0)
+        short_pct = float(data.get("shortPct", data.get("short_pct", data.get("shortAccount", 50.0))) or 50.0)
+        return {"long_pct": round(long_pct, 2), "short_pct": round(short_pct, 2)}
+
+    def _parse_net_ls_delta(self, data: Dict) -> float:
+        """Net long/short delta — positive = more net longs, negative = more net shorts."""
+        v = data.get("netLongShortDelta", data.get("delta", data.get("value", 0.0)))
+        try:
+            return round(float(v or 0.0), 4)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _parse_prev_day_structure(self, data: Dict, current_price: float) -> Dict:
+        """
+        Parse previous day levels and determine price structure.
+        ABOVE_PDH = bullish structural break; BELOW_PDL = bearish break; BETWEEN = neutral.
+        """
+        pdh = float(data.get("pdHigh", data.get("pd_high", data.get("high", 0.0))) or 0.0)
+        pdl = float(data.get("pdLow",  data.get("pd_low",  data.get("low",  0.0))) or 0.0)
+        pdo = float(data.get("pdOpen", data.get("pd_open", data.get("open", 0.0))) or 0.0)
+        if pdh <= 0 or pdl <= 0 or current_price <= 0:
+            return {"prev_day_high": None, "prev_day_low": None, "prev_day_open": None,
+                    "prev_day_structure": "UNKNOWN"}
+        if current_price > pdh:
+            structure = "ABOVE_PDH"
+        elif current_price < pdl:
+            structure = "BELOW_PDL"
+        else:
+            structure = "BETWEEN"
+        return {
+            "prev_day_high":      round(pdh, 2),
+            "prev_day_low":       round(pdl, 2),
+            "prev_day_open":      round(pdo, 2),
+            "prev_day_structure": structure,
+            "prev_day_above_pdo": (current_price > pdo) if pdo > 0 else None,
+        }
+
+    def _parse_4h_compression(self, data: Dict) -> Dict:
+        """
+        Detect 4H range compression (ATR squeeze before volatility expansion).
+        Compares the most recent 4H candle range to the 20-bar average.
+        compression_ratio < 0.6 = compressed; is_compressed = True.
+        """
+        bars = data.get("data", []) if isinstance(data, dict) else []
+        if len(bars) < 5:
+            return {"is_compressed": False, "compression_ratio": 1.0}
+        ranges = []
+        for b in bars:
+            if not isinstance(b, dict):
+                continue
+            h = float(b.get("high", b.get("ha_high", 0.0)) or 0.0)
+            l = float(b.get("low",  b.get("ha_low",  0.0)) or 0.0)
+            if h > l > 0:
+                ranges.append(h - l)
+        if len(ranges) < 5:
+            return {"is_compressed": False, "compression_ratio": 1.0}
+        avg_range     = sum(ranges[:-1]) / len(ranges[:-1])
+        current_range = ranges[-1]
+        ratio = round(current_range / avg_range, 3) if avg_range > 0 else 1.0
+        return {"is_compressed": ratio < 0.6, "compression_ratio": ratio}
