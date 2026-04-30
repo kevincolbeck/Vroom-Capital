@@ -147,8 +147,8 @@ class HyblockMonitor:
         p_ts = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 5}
         # averageLeverageUsed only works on OKX (not binance_perp_stable)
         p_lev = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
-        # MII: multi-exchange, fetch all 5 bars (not just latest) for sustained analysis
-        p_mii = {"coin": COIN, "exchange": MII_EXCHANGES, "timeframe": "1h", "limit": 5}
+        # MII: 15m bars for real-time pressure detection (1h was stale, only updated hourly)
+        p_mii = {"coin": COIN, "exchange": MII_EXCHANGES, "timeframe": "15m", "limit": 5}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -156,6 +156,9 @@ class HyblockMonitor:
                 "liq_heatmap", "cumulative_liq", "open_interest",
                 "avg_leverage", "top_trader_pos", "top_trader_acc",
                 "whale_retail", "volume_delta", "funding", "market_imbalance",
+                # Precision scalping signals
+                "liq_levels", "liq_levels_size", "liq_levels_count",
+                "volume_ratio", "buy_sell_count",
             ]
             coros = [
                 self._fetch(client, "bidAsk",                 p_ts,   unwrap_latest=True),
@@ -171,6 +174,14 @@ class HyblockMonitor:
                 self._fetch(client, "volumeDelta",            p_ts,   unwrap_latest=True),
                 self._fetch(client, "fundingRate",            p_ts,   unwrap_latest=True),
                 self._fetch(client, "marketImbalanceIndex",   p_mii,  unwrap_latest=False),
+                # Exact per-price liquidation levels (snapshot)
+                self._fetch(client, "liquidationLevels",      p_snap),
+                # Liq level size/count delta oscillators
+                self._fetch(client, "liqLevelsSize",          p_ts,   unwrap_latest=True),
+                self._fetch(client, "liqLevelsCount",         p_ts,   unwrap_latest=True),
+                # Volume ratio and buy/sell trade count ratio (-1 to +1)
+                self._fetch(client, "volumeRatio",            p_ts,   unwrap_latest=True),
+                self._fetch(client, "buySellTradeCountRatio", p_ts,   unwrap_latest=True),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -189,6 +200,11 @@ class HyblockMonitor:
         vol_delta = self._parse_volume_delta(raw["volume_delta"])
         liq_clusters = self._parse_liq_clusters(raw["liq_heatmap"], current_price)
         oi_trend = self._parse_oi_trend(raw["open_interest"])
+        liq_levels = self._parse_liq_levels(raw["liq_levels"], current_price)
+        volume_ratio = self._parse_scalar(raw["volume_ratio"], ("volumeRatio", "ratio", "value", "delta"))
+        buy_sell_count = self._parse_scalar(raw["buy_sell_count"], ("buySellTradeCountRatio", "ratio", "value", "delta"))
+        liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
+        liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelsCountDelta", "countDelta", "delta", "value"))
 
         result = {
             "available": True,
@@ -214,8 +230,14 @@ class HyblockMonitor:
             # Liquidations
             "liq_clusters": liq_clusters,
             "oi_trend": oi_trend,
-            # Market Imbalance Index: cross-exchange, latest value + sustained bars
+            # Market Imbalance Index: cross-exchange 15m, latest value + sustained bars
             **self._parse_mii(raw["market_imbalance"]),
+            # Precision scalping signals
+            "liq_levels": liq_levels,
+            "volume_ratio": volume_ratio,
+            "buy_sell_count_ratio": buy_sell_count,
+            "liq_levels_size_delta": liq_levels_size,
+            "liq_levels_count_delta": liq_levels_count,
             # Useful raw snippets for the dashboard
             "funding_rate_raw": float(raw["funding"].get("fundingRate", raw["funding"].get("rate", 0.0))),
             "avg_leverage_raw": (
@@ -359,6 +381,30 @@ class HyblockMonitor:
             else:
                 score -= 3.0
                 warnings.append("sell-dominant volume — contradicts LONG")
+
+        # ── Volume ratio oscillator (-1 to +1) ───────────────────────────────
+        vr = float(data.get("volume_ratio") or 0.0)
+        if abs(vr) > 0.05:
+            vr_confirms = (direction == "LONG" and vr > 0) or (direction == "SHORT" and vr < 0)
+            if vr_confirms:
+                vr_pts = 8.0 if abs(vr) > 0.3 else 4.0
+                score += vr_pts
+                notes.append(f"volume ratio {'bullish' if vr > 0 else 'bearish'} ({vr:+.2f}, +{vr_pts:.0f})")
+            else:
+                score -= 3.0
+                warnings.append(f"volume ratio contradicts {direction} ({vr:+.2f})")
+
+        # ── Buy/sell trade count ratio (-1 to +1) ────────────────────────────
+        bsr = float(data.get("buy_sell_count_ratio") or 0.0)
+        if abs(bsr) > 0.05:
+            bsr_confirms = (direction == "LONG" and bsr > 0) or (direction == "SHORT" and bsr < 0)
+            if bsr_confirms:
+                bsr_pts = 6.0 if abs(bsr) > 0.3 else 3.0
+                score += bsr_pts
+                notes.append(f"trade count ratio {'buy-heavy' if bsr > 0 else 'sell-heavy'} ({bsr:+.2f}, +{bsr_pts:.0f})")
+            else:
+                score -= 2.0
+                warnings.append(f"trade count ratio contradicts {direction} ({bsr:+.2f})")
 
         # ── Liquidation cluster proximity (price magnets) ─────────────────────
         # Uses nearest single cluster size (not sum of all clusters above/below).
@@ -678,3 +724,99 @@ class HyblockMonitor:
         if roc < -3.0:
             return "FALLING"
         return "FLAT"
+
+    def _parse_liq_levels(self, data: Dict, current_price: float) -> Dict:
+        """
+        Parse exact per-price liquidation level data to determine cascade direction.
+
+        Cascade mechanics:
+          LONG cluster BELOW price → if hit, longs are sold → price falls → SHORT entry
+          SHORT cluster ABOVE price → if hit, shorts buy back → price rises → LONG entry
+
+        Returns cascade_direction + nearest significant cluster details for each side.
+        """
+        levels = data.get("data") or data.get("levels") or data.get("liquidationLevels") or []
+        if isinstance(levels, dict):
+            levels = list(levels.values())
+        if not levels or current_price <= 0:
+            return {
+                "cascade_direction": None,
+                "long_cluster_pct": None, "long_cluster_size": 0.0, "long_cluster_price": None,
+                "short_cluster_pct": None, "short_cluster_size": 0.0, "short_cluster_price": None,
+            }
+
+        max_pct = settings.liq_cluster_max_pct / 100.0
+        min_btc = settings.min_liq_cluster_btc
+
+        def _px(l: Dict) -> float:
+            for key in ("price", "priceLevel", "price_level", "liqPrice", "liquidationPrice"):
+                v = l.get(key)
+                if v is not None:
+                    return float(v)
+            return 0.0
+
+        long_below: List[Tuple[float, float, float]] = []
+        short_above: List[Tuple[float, float, float]] = []
+
+        for lv in levels:
+            px = _px(lv)
+            if px <= 0:
+                continue
+            long_sz = float(
+                lv.get("longLiquidations", lv.get("longLiquidationSize", lv.get("longSize", 0.0))) or 0.0
+            )
+            short_sz = float(
+                lv.get("shortLiquidations", lv.get("shortLiquidationSize", lv.get("shortSize", 0.0))) or 0.0
+            )
+            if px < current_price:
+                pct = (current_price - px) / current_price
+                if pct <= max_pct and long_sz >= min_btc:
+                    long_below.append((px, long_sz, pct))
+            elif px > current_price:
+                pct = (px - current_price) / current_price
+                if pct <= max_pct and short_sz >= min_btc:
+                    short_above.append((px, short_sz, pct))
+
+        best_long = max(long_below, key=lambda x: x[1]) if long_below else None
+        best_short = max(short_above, key=lambda x: x[1]) if short_above else None
+
+        long_pct  = round(best_long[2] * 100, 2)  if best_long  else None
+        short_pct = round(best_short[2] * 100, 2) if best_short else None
+        long_sz   = round(best_long[1], 2)  if best_long  else 0.0
+        short_sz  = round(best_short[1], 2) if best_short else 0.0
+
+        has_long  = best_long  is not None
+        has_short = best_short is not None
+
+        if has_long and has_short:
+            # Both present — score by size/proximity; bigger relative signal wins
+            long_score  = long_sz  / (long_pct  or 0.001)
+            short_score = short_sz / (short_pct or 0.001)
+            cascade_dir = "SHORT" if long_score >= short_score else "LONG"
+        elif has_long:
+            cascade_dir = "SHORT"
+        elif has_short:
+            cascade_dir = "LONG"
+        else:
+            cascade_dir = None
+
+        return {
+            "cascade_direction": cascade_dir,
+            "long_cluster_pct":   long_pct,
+            "long_cluster_size":  long_sz,
+            "long_cluster_price": round(best_long[0], 2)  if best_long  else None,
+            "short_cluster_pct":  short_pct,
+            "short_cluster_size": short_sz,
+            "short_cluster_price": round(best_short[0], 2) if best_short else None,
+        }
+
+    def _parse_scalar(self, data: Dict, keys: tuple) -> float:
+        """Extract a scalar float from a data dict by trying keys in order."""
+        for key in keys:
+            v = data.get(key)
+            if v is not None:
+                try:
+                    return round(float(v), 4)
+                except (TypeError, ValueError):
+                    pass
+        return 0.0

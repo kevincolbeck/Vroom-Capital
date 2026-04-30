@@ -614,6 +614,15 @@ class BotEngine:
             liq_target_price=signal.liq_target_price,
             funding_rate=funding.get("average_rate"),
             funding_sentiment=funding.get("overall_sentiment"),
+            # Precision scalping signals
+            mii_15m=hyblock.get("market_imbalance_index"),  # now 15m timeframe
+            liq_level_nearest_long_pct=signal.liq_level_long_pct,
+            liq_level_nearest_short_pct=signal.liq_level_short_pct,
+            liq_level_long_size=signal.liq_level_long_size,
+            liq_level_short_size=signal.liq_level_short_size,
+            volume_ratio=signal.volume_ratio,
+            buy_sell_count_ratio=signal.buy_sell_count_ratio,
+            cascade_direction=signal.cascade_direction,
         )
         try:
             async with AsyncSessionLocal() as db:

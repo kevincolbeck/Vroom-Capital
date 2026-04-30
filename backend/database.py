@@ -211,6 +211,16 @@ class SignalTick(Base):
     funding_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     funding_sentiment: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
+    # Precision scalping signals (15m MII + exact liq levels + order flow ratios)
+    mii_15m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_level_nearest_long_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_level_nearest_short_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_level_long_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_level_short_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    volume_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    buy_sell_count_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cascade_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -230,6 +240,21 @@ async def init_db():
         for col_name, col_type in new_position_cols:
             try:
                 await conn.execute(text(f"ALTER TABLE positions ADD COLUMN {col_name} {col_type}"))
+            except Exception:
+                pass  # column already exists
+        new_signal_tick_cols = [
+            ("mii_15m", "REAL"),
+            ("liq_level_nearest_long_pct", "REAL"),
+            ("liq_level_nearest_short_pct", "REAL"),
+            ("liq_level_long_size", "REAL"),
+            ("liq_level_short_size", "REAL"),
+            ("volume_ratio", "REAL"),
+            ("buy_sell_count_ratio", "REAL"),
+            ("cascade_direction", "TEXT"),
+        ]
+        for col_name, col_type in new_signal_tick_cols:
+            try:
+                await conn.execute(text(f"ALTER TABLE signal_ticks ADD COLUMN {col_name} {col_type}"))
             except Exception:
                 pass  # column already exists
     async with AsyncSessionLocal() as session:

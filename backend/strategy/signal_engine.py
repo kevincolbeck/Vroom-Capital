@@ -51,6 +51,15 @@ class TradeSignal:
         # Liq cluster take-profit target (set at entry, None if no cluster gate)
         self.liq_target_price: Optional[float] = None
 
+        # Precision scalping signals
+        self.cascade_direction: Optional[str] = None
+        self.liq_level_long_pct: Optional[float] = None   # LONG cluster % below price
+        self.liq_level_short_pct: Optional[float] = None  # SHORT cluster % above price
+        self.liq_level_long_size: float = 0.0
+        self.liq_level_short_size: float = 0.0
+        self.volume_ratio: float = 0.0
+        self.buy_sell_count_ratio: float = 0.0
+
         # Dashboard counters
         self.ha_6h_green_count: int = 0
         self.ha_6h_red_count: int = 0
@@ -82,6 +91,13 @@ class TradeSignal:
             "current_price": self.current_price,
             "ha_3m_color": self.ha_3m_color,
             "liq_target_price": self.liq_target_price,
+            "cascade_direction": self.cascade_direction,
+            "liq_level_long_pct": self.liq_level_long_pct,
+            "liq_level_short_pct": self.liq_level_short_pct,
+            "liq_level_long_size": self.liq_level_long_size,
+            "liq_level_short_size": self.liq_level_short_size,
+            "volume_ratio": self.volume_ratio,
+            "buy_sell_count_ratio": self.buy_sell_count_ratio,
             "ha_6h_green_count": self.ha_6h_green_count,
             "ha_6h_red_count": self.ha_6h_red_count,
             "ha_1h_consecutive": self.ha_1h_consecutive,
@@ -161,8 +177,9 @@ class SignalEngine:
                     break
             signal.ha_1h_consecutive = _streak
 
-        # ─── Step 2: Direction by majority vote across 6h / 1h / 3m ──────────
-        # 2-of-3 is enough; whichever color has the majority wins.
+        # ─── Step 2: Preliminary direction from HA (for zone/velocity only) ───
+        # HA is now context and scoring only — liquidation cascade levels (fetched
+        # from Hyblock) will override this direction after async data arrives.
         _ha_colors = [signal.ha_6h_color, signal.ha_1h_color]
         if ha_3m:
             _ha_colors.append(signal.ha_3m_color)
@@ -174,18 +191,16 @@ class SignalEngine:
         elif _red_votes > _green_votes:
             candidate_direction = "SHORT"
         else:
-            signal.block_reasons.append(
-                f"HA split — no majority: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
-            )
-            signal.strength = "BLOCKED"
-            signal.velocity_data = compute_velocity(candles_1h)
-            signal.macro_context = self.macro_calendar.get_macro_context()
-            return signal
+            # Split — default LONG; cascade direction will override after fetch
+            candidate_direction = "LONG"
 
         logger.info(
-            f"[{candidate_direction}] HA majority ({max(_green_votes, _red_votes)}/{len(_ha_colors)}): "
+            f"[{candidate_direction}] HA preliminary ({_green_votes}G/{_red_votes}R): "
             f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
         )
+
+        # Start Hyblock fetch early so it runs concurrently with sync filters below
+        hyblock_task = asyncio.create_task(self.hyblock_monitor.fetch_all(current_price))
 
         # ─── Step 4: Zone analysis ─────────────────────────────────────────
         zone_key = get_zone_key(current_price, settings.zone_size_usd)
@@ -237,10 +252,9 @@ class SignalEngine:
             signal.strength = "BLOCKED"
             return signal
 
-        # Kick off I/O-bound tasks concurrently now that all sync filters passed.
-        liq_task     = asyncio.create_task(self.liquidation_monitor.fetch_all(current_price))
-        spot_task    = asyncio.create_task(self.order_flow_monitor.fetch_all(current_price))
-        hyblock_task = asyncio.create_task(self.hyblock_monitor.fetch_all(current_price))
+        # Kick off remaining I/O-bound tasks (hyblock_task already running since Step 2)
+        liq_task  = asyncio.create_task(self.liquidation_monitor.fetch_all(current_price))
+        spot_task = asyncio.create_task(self.order_flow_monitor.fetch_all(current_price))
 
         # ─── Step 7: Funding rate check ───────────────────────────────────
         try:
@@ -318,60 +332,96 @@ class SignalEngine:
         # ─── Step 8.7: Hyblock Capital signals ───────────────────────────
         hyblock_score_delta = 0.0
         hyblock_block = False
+        hyblock_data: Dict = {}
         try:
             hyblock_data = await hyblock_task
-            hyblock_score_delta, hyblock_desc, hyblock_warnings, hyblock_block = \
-                self.hyblock_monitor.get_trade_context(candidate_direction, hyblock_data)
             signal.hyblock_analysis = {
                 **{k: v for k, v in hyblock_data.items() if k != "raw"},
+            }
+        except Exception as e:
+            logger.warning(f"Hyblock fetch failed: {e}")
+
+        # ─── Step 8.75: Override direction from liq cascade levels ───────
+        # Primary direction signal: LONG cluster below → SHORT (will cascade down)
+        #                           SHORT cluster above → LONG (will cascade up)
+        # Fallback order: liq_levels → MII sign → HA preliminary
+        mii = hyblock_data.get("market_imbalance_index", 0.0)
+        _liq_levels = hyblock_data.get("liq_levels", {})
+        cascade_dir = _liq_levels.get("cascade_direction")
+
+        if cascade_dir:
+            if cascade_dir != candidate_direction:
+                logger.info(f"Direction: {candidate_direction} → {cascade_dir} (liq cascade)")
+                # Re-check zone cooldown for the overridden direction
+                if self.zone_tracker.is_in_cooldown(zone_key, cascade_dir):
+                    remaining = self.zone_tracker.get_cooldown_remaining(zone_key, cascade_dir)
+                    signal.block_reasons.append(
+                        f"Zone {zone_key} {cascade_dir} in cooldown — {remaining/60:.0f}min remaining"
+                    )
+                    signal.direction = cascade_dir
+                    signal.strength = "BLOCKED"
+                    return signal
+            candidate_direction = cascade_dir
+            logger.info(
+                f"[{candidate_direction}] Liq cascade: "
+                f"LONG_cluster={_liq_levels.get('long_cluster_pct')}%/{_liq_levels.get('long_cluster_size',0):.0f}BTC "
+                f"SHORT_cluster={_liq_levels.get('short_cluster_pct')}%/{_liq_levels.get('short_cluster_size',0):.0f}BTC"
+            )
+        elif mii != 0:
+            mii_dir = "LONG" if mii > 0 else "SHORT"
+            if mii_dir != candidate_direction:
+                logger.info(f"Direction: {candidate_direction} → {mii_dir} (MII {mii:+.2f})")
+                if self.zone_tracker.is_in_cooldown(zone_key, mii_dir):
+                    remaining = self.zone_tracker.get_cooldown_remaining(zone_key, mii_dir)
+                    signal.block_reasons.append(
+                        f"Zone {zone_key} {mii_dir} in cooldown — {remaining/60:.0f}min remaining"
+                    )
+                    signal.direction = mii_dir
+                    signal.strength = "BLOCKED"
+                    return signal
+            candidate_direction = mii_dir
+            logger.info(f"[{candidate_direction}] MII direction ({mii:+.2f}) — no cascade signal")
+        else:
+            # No cascade, no MII — keep HA direction or block if HA was split
+            if _green_votes == _red_votes:
+                signal.block_reasons.append(
+                    f"No cascade/MII direction signal and HA split: "
+                    f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
+                )
+                signal.direction = candidate_direction
+                signal.strength = "BLOCKED"
+                return signal
+            logger.info(f"[{candidate_direction}] HA direction — no cascade/MII signal available")
+
+        # Store precision signal state on the trade signal
+        signal.cascade_direction = cascade_dir
+        signal.liq_level_long_pct   = _liq_levels.get("long_cluster_pct")
+        signal.liq_level_short_pct  = _liq_levels.get("short_cluster_pct")
+        signal.liq_level_long_size  = _liq_levels.get("long_cluster_size", 0.0) or 0.0
+        signal.liq_level_short_size = _liq_levels.get("short_cluster_size", 0.0) or 0.0
+        signal.volume_ratio         = hyblock_data.get("volume_ratio", 0.0) or 0.0
+        signal.buy_sell_count_ratio = hyblock_data.get("buy_sell_count_ratio", 0.0) or 0.0
+
+        # Score hyblock signals now that direction is final
+        try:
+            hyblock_score_delta, hyblock_desc, hyblock_warnings, hyblock_block = \
+                self.hyblock_monitor.get_trade_context(candidate_direction, hyblock_data)
+            signal.hyblock_analysis.update({
                 "trade_context": hyblock_desc,
                 "score_delta": hyblock_score_delta,
-            }
+            })
             for w in hyblock_warnings:
                 signal.warnings.append(f"Hyblock: {w}")
             if hyblock_desc and hyblock_desc != "No strong Hyblock signals":
                 signal.warnings.append(f"Hyblock: {hyblock_desc}")
         except Exception as e:
-            logger.warning(f"Hyblock signal failed: {e}")
-            hyblock_data = {}
-            hyblock_block = False
+            logger.warning(f"Hyblock scoring failed: {e}")
 
         if hyblock_block:
             signal.block_reasons.append("Hyblock: CRITICAL cascade risk — entry blocked")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             return signal
-
-        # ─── Step 8.8: MII primary trigger gate ──────────────────────────
-        # Market Imbalance Index is our primary entry trigger.
-        # Must confirm direction: > +threshold for LONG, < -threshold for SHORT.
-        mii = hyblock_data.get("market_imbalance_index", 0.0)
-        _mii_threshold = settings.mii_entry_threshold
-        if candidate_direction == "LONG" and mii < _mii_threshold:
-            signal.block_reasons.append(
-                f"MII {mii:+.2f} not bullish enough for LONG — need >{_mii_threshold:.2f}"
-            )
-            logger.info(f"[LONG] BLOCKED — MII gate: {mii:+.2f} (need >{_mii_threshold:.2f})")
-            signal.direction = candidate_direction
-            signal.strength = "BLOCKED"
-            return signal
-        elif candidate_direction == "SHORT" and mii > -_mii_threshold:
-            signal.block_reasons.append(
-                f"MII {mii:+.2f} not bearish enough for SHORT — need <-{_mii_threshold:.2f}"
-            )
-            logger.info(f"[SHORT] BLOCKED — MII gate: {mii:+.2f} (need <-{_mii_threshold:.2f})")
-            signal.direction = candidate_direction
-            signal.strength = "BLOCKED"
-            return signal
-
-        # MII magnitude bonus — stored for use in Step 9 score calculation
-        _mii_abs = abs(mii)
-        if _mii_abs > 0.75:
-            _mii_pts = 20.0
-        elif _mii_abs > 0.5:
-            _mii_pts = 12.0
-        else:
-            _mii_pts = 5.0
 
         # ─── Step 8.9: Liq cluster gate ──────────────────────────────────
         # Must have a liquidation cluster in trade direction:
@@ -429,12 +479,37 @@ class SignalEngine:
             signal.liq_target_price = _below_price
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
-        score = 35.0  # Base (MII magnitude +5/+12/+20 and sustained +5/+10 fill the gap)
-        _breakdown: list[str] = ["base=35"]
+        score = 20.0  # Base (cascade + confirmations fill the gap; threshold is 65)
+        _breakdown: list[str] = ["base=20"]
 
-        # MII magnitude bonus (gate already passed — reward stronger readings)
-        score += _mii_pts
-        _breakdown.append(f"MII={mii:+.2f}({_mii_pts:+.0f})")
+        # Liq cascade level proximity + size bonus (primary trigger — replaces MII gate)
+        # Direction is already set by cascade, so we reward signal strength here
+        if candidate_direction == "LONG":
+            _casc_pct  = signal.liq_level_short_pct  # SHORT cluster above → LONG
+            _casc_size = signal.liq_level_short_size
+        else:
+            _casc_pct  = signal.liq_level_long_pct   # LONG cluster below → SHORT
+            _casc_size = signal.liq_level_long_size
+
+        if _casc_pct is not None:
+            if _casc_pct <= 0.3:
+                _prox_pts = 25.0
+            elif _casc_pct <= 0.7:
+                _prox_pts = 15.0
+            elif _casc_pct <= 1.5:
+                _prox_pts = 8.0
+            else:
+                _prox_pts = 3.0
+            if _casc_size > 3000:
+                _prox_pts += 15.0
+            elif _casc_size > 1000:
+                _prox_pts += 8.0
+            elif _casc_size > 300:
+                _prox_pts += 3.0
+            score += _prox_pts
+            _breakdown.append(f"cascade={_casc_pct:.1f}%/{_casc_size:.0f}BTC({_prox_pts:+.0f})")
+        else:
+            _breakdown.append("cascade=none(+0)")
 
         # HA trend bonus — direction-aware: trend must match the trade direction
         _trend = signal.ha_6h_trend
@@ -514,12 +589,12 @@ class SignalEngine:
             signal.strength = "WEAK"
 
         # ─── Step 10.5: Minimum confidence gate ──────────────────────────
-        if score < 75.0:
+        if score < 65.0:
             signal.block_reasons.append(
-                f"Confidence {score:.0f}% below 75% threshold — no trade"
+                f"Confidence {score:.0f}% below 65% threshold — no trade"
             )
             logger.info(
-                f"[{candidate_direction}] BLOCKED — confidence {score:.0f}% < 75% | "
+                f"[{candidate_direction}] BLOCKED — confidence {score:.0f}% < 65% | "
                 f"MII={mii:+.2f} | breakdown: {' '.join(_breakdown[-4:])}"
             )
             signal.direction = candidate_direction
@@ -546,8 +621,15 @@ class SignalEngine:
         _liq_target_str = (
             f"${signal.liq_target_price:,.0f}" if signal.liq_target_price else "none"
         )
+        _casc_str = (
+            f"LONG@{signal.liq_level_long_pct:.1f}%/{signal.liq_level_long_size:.0f}BTC "
+            f"SHORT@{signal.liq_level_short_pct:.1f}%/{signal.liq_level_short_size:.0f}BTC"
+            if signal.liq_level_long_pct is not None or signal.liq_level_short_pct is not None
+            else "none"
+        )
         signal.entry_reason = (
-            f"{candidate_direction} | MII={mii:+.2f} | "
+            f"{candidate_direction} | Cascade={_casc_str} | MII={mii:+.2f} | "
+            f"VR={signal.volume_ratio:+.2f} | BSR={signal.buy_sell_count_ratio:+.2f} | "
             f"HA: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color} | "
             f"LiqTarget={_liq_target_str} | Zone={zone_key} ({zone_position}) | "
             f"Confidence={score:.0f}% | Funding={funding_analysis.get('average_rate', 0)*100:.3f}% | "
