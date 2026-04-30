@@ -222,6 +222,16 @@ class SignalTick(Base):
     cascade_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     cvd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     oi_delta_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Liq levels — exact cascade trigger prices and size/count oscillators
+    liq_long_cluster_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_short_cluster_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_levels_size_delta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_levels_count_delta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Heatmap cluster sizes (BTC) to complement the existing pct columns
+    liq_above_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_below_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # MII sustained bars — consecutive bars MII held above threshold (signal quality)
+    mii_sustained_bars: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 async def get_db():
@@ -255,6 +265,13 @@ async def init_db():
             ("cascade_direction", "TEXT"),
             ("cvd", "REAL"),
             ("oi_delta_pct", "REAL"),
+            ("liq_long_cluster_price", "REAL"),
+            ("liq_short_cluster_price", "REAL"),
+            ("liq_levels_size_delta", "REAL"),
+            ("liq_levels_count_delta", "REAL"),
+            ("liq_above_size", "REAL"),
+            ("liq_below_size", "REAL"),
+            ("mii_sustained_bars", "INTEGER"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:

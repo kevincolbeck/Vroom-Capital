@@ -587,6 +587,7 @@ class BotEngine:
         hyblock = signal.hyblock_analysis or {}
         funding = signal.funding_analysis  or {}
         liq     = hyblock.get("liq_clusters") or {}
+        liq_lvls = hyblock.get("liq_levels") or {}
         tick = SignalTick(
             ts=datetime.utcnow(),
             price=price,
@@ -625,6 +626,17 @@ class BotEngine:
             cascade_direction=signal.cascade_direction,
             cvd=hyblock.get("cvd"),
             oi_delta_pct=hyblock.get("oi_delta_pct"),
+            # Exact cascade trigger prices
+            liq_long_cluster_price=liq_lvls.get("long_cluster_price"),
+            liq_short_cluster_price=liq_lvls.get("short_cluster_price"),
+            # Liq level size/count oscillators
+            liq_levels_size_delta=hyblock.get("liq_levels_size_delta"),
+            liq_levels_count_delta=hyblock.get("liq_levels_count_delta"),
+            # Heatmap cluster BTC sizes
+            liq_above_size=liq.get("above_size"),
+            liq_below_size=liq.get("below_size"),
+            # MII sustained bars
+            mii_sustained_bars=hyblock.get("mii_sustained_bars"),
         )
         try:
             async with AsyncSessionLocal() as db:
