@@ -244,6 +244,28 @@ class BotEngine:
                         await copy_manager.close_copy_positions(position, exit_reason)
                         await self._update_bot_stats(db, position)
 
+    @staticmethod
+    def _inject_forming_candle(candles: list, interval_seconds: int, current_price: float) -> list:
+        """Bitunix returns only closed candles. If the last candle is from a previous
+        period, append a synthetic forming candle so HA reflects the current price."""
+        if not candles:
+            return candles
+        import time as _t
+        now_ms = int(_t.time() * 1000)
+        interval_ms = interval_seconds * 1000
+        current_period_start = (now_ms // interval_ms) * interval_ms
+        if candles[-1]["open_time"] < current_period_start:
+            last_close = candles[-1]["close"]
+            candles = candles + [{
+                "open_time": current_period_start,
+                "open":   last_close,
+                "high":   max(last_close, current_price),
+                "low":    min(last_close, current_price),
+                "close":  current_price,
+                "volume": 0,
+            }]
+        return candles
+
     async def _tick(self):
         """Single tick of the bot loop."""
         client = get_bitunix_client()
@@ -274,6 +296,11 @@ class BotEngine:
                 candles_3m_raw = await client.get_klines("3m", limit=20)
             except Exception:
                 candles_3m_raw = []
+
+            # Bitunix omits the forming candle — inject it so HA is current
+            candles_1h_raw = self._inject_forming_candle(candles_1h_raw, 3600,  current_price)
+            candles_6h_raw = self._inject_forming_candle(candles_6h_raw, 21600, current_price)
+            candles_3m_raw = self._inject_forming_candle(candles_3m_raw, 180,   current_price)
 
             # ─── Check and update open positions ──────────────────────
             open_positions = await pos_manager.get_open_positions()
