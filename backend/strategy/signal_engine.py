@@ -364,6 +364,15 @@ class SignalEngine:
             signal.strength = "BLOCKED"
             return signal
 
+        # MII magnitude bonus — stored for use in Step 9 score calculation
+        _mii_abs = abs(mii)
+        if _mii_abs > 0.75:
+            _mii_pts = 20.0
+        elif _mii_abs > 0.5:
+            _mii_pts = 12.0
+        else:
+            _mii_pts = 5.0
+
         # ─── Step 8.9: Liq cluster gate ──────────────────────────────────
         # Must have a liquidation cluster in trade direction:
         #   - within liq_cluster_max_pct % of current price
@@ -420,8 +429,12 @@ class SignalEngine:
             signal.liq_target_price = _below_price
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
-        score = 50.0  # Base
-        _breakdown: list[str] = ["base=50"]
+        score = 40.0  # Base (lowered from 50 — MII magnitude now fills the gap)
+        _breakdown: list[str] = ["base=40"]
+
+        # MII magnitude bonus (gate already passed — reward stronger readings)
+        score += _mii_pts
+        _breakdown.append(f"MII={mii:+.2f}({_mii_pts:+.0f})")
 
         # HA trend bonus — direction-aware: trend must match the trade direction
         _trend = signal.ha_6h_trend
