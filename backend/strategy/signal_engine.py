@@ -429,8 +429,8 @@ class SignalEngine:
             signal.liq_target_price = _below_price
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
-        score = 40.0  # Base (lowered from 50 — MII magnitude now fills the gap)
-        _breakdown: list[str] = ["base=40"]
+        score = 35.0  # Base (MII magnitude +5/+12/+20 and sustained +5/+10 fill the gap)
+        _breakdown: list[str] = ["base=35"]
 
         # MII magnitude bonus (gate already passed — reward stronger readings)
         score += _mii_pts
