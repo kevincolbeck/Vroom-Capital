@@ -516,7 +516,12 @@ class SignalEngine:
         _bullish_trend = _trend in ("STRONG_BULLISH", "BULLISH")
         _bearish_trend = _trend in ("STRONG_BEARISH", "BEARISH")
         _strong = _trend in ("STRONG_BULLISH", "STRONG_BEARISH")
-        _liq_confirmed = signal.liq_target_price is not None
+        # Liq confirmed if either the heatmap TP was set OR liq_levels has a cascade signal
+        _liq_confirmed = (
+            signal.liq_target_price is not None
+            or signal.liq_level_long_pct is not None
+            or signal.liq_level_short_pct is not None
+        )
         if candidate_direction == "LONG":
             if _bullish_trend:
                 ha_pts = 20.0 if _strong else 10.0

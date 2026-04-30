@@ -149,6 +149,10 @@ class HyblockMonitor:
         p_lev = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
         # MII: 15m bars for real-time pressure detection (1h was stale, only updated hourly)
         p_mii = {"coin": COIN, "exchange": MII_EXCHANGES, "timeframe": "15m", "limit": 5}
+        # CVD: 20 bars to compute cumulative direction pressure
+        p_cvd = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 20}
+        # OI multi-bar: 5 bars for rate-of-change direction
+        p_oi_multi = {"coin": COIN, "exchange": EXCHANGE, "timeframe": "1h", "limit": 5}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -159,6 +163,8 @@ class HyblockMonitor:
                 # Precision scalping signals
                 "liq_levels", "liq_levels_size", "liq_levels_count",
                 "volume_ratio", "buy_sell_count",
+                # CVD and OI multi-bar (full response, not unwrapped)
+                "volume_delta_multi", "oi_multi",
             ]
             coros = [
                 self._fetch(client, "bidAsk",                 p_ts,   unwrap_latest=True),
@@ -182,6 +188,10 @@ class HyblockMonitor:
                 # Volume ratio and buy/sell trade count ratio (-1 to +1)
                 self._fetch(client, "volumeRatio",            p_ts,   unwrap_latest=True),
                 self._fetch(client, "buySellTradeCountRatio", p_ts,   unwrap_latest=True),
+                # CVD: 20 bars of volumeDelta (full response, not unwrapped)
+                self._fetch(client, "volumeDelta",            p_cvd,  unwrap_latest=False),
+                # OI multi-bar: 5 bars for rate-of-change
+                self._fetch(client, "openInterest",           p_oi_multi, unwrap_latest=False),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -205,6 +215,8 @@ class HyblockMonitor:
         buy_sell_count = self._parse_scalar(raw["buy_sell_count"], ("buySellTradeCountRatio", "ratio", "value", "delta"))
         liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
         liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelsCountDelta", "countDelta", "delta", "value"))
+        cvd = self._parse_cvd(raw["volume_delta_multi"])
+        oi_delta = self._parse_oi_delta(raw["oi_multi"])
 
         result = {
             "available": True,
@@ -238,6 +250,8 @@ class HyblockMonitor:
             "buy_sell_count_ratio": buy_sell_count,
             "liq_levels_size_delta": liq_levels_size,
             "liq_levels_count_delta": liq_levels_count,
+            "cvd": cvd,
+            "oi_delta_pct": oi_delta,
             # Useful raw snippets for the dashboard
             "funding_rate_raw": float(raw["funding"].get("fundingRate", raw["funding"].get("rate", 0.0))),
             "avg_leverage_raw": (
@@ -405,6 +419,51 @@ class HyblockMonitor:
             else:
                 score -= 2.0
                 warnings.append(f"trade count ratio contradicts {direction} ({bsr:+.2f})")
+
+        # ── Cumulative Volume Delta ───────────────────────────────────────────
+        # CVD = sum of volume delta bars: sustained positive → buyers in control,
+        # sustained negative → sellers in control. Sign confirms direction;
+        # magnitude calibrated once real Hyblock values are observed.
+        cvd = float(data.get("cvd") or 0.0)
+        if abs(cvd) > 0.01:  # deadband filters near-zero noise
+            cvd_confirms = (direction == "LONG" and cvd > 0) or (direction == "SHORT" and cvd < 0)
+            if cvd_confirms:
+                cvd_pts = 8.0 if abs(cvd) > 2.0 else 5.0 if abs(cvd) > 0.5 else 3.0
+                score += cvd_pts
+                notes.append(f"CVD {'positive' if cvd > 0 else 'negative'} ({cvd:+.2f}, +{cvd_pts:.0f})")
+            else:
+                score -= 3.0
+                warnings.append(f"CVD contradicts {direction} ({cvd:+.2f})")
+
+        # ── Open Interest Delta ───────────────────────────────────────────────
+        # Rising OI + negative funding → new SHORT positions piling in = squeeze fuel → confirms LONG
+        # Rising OI + positive funding → new LONG positions piling in = crowded long → confirms SHORT
+        # Falling OI → de-leveraging; reduces confidence regardless of direction
+        oi_delta = float(data.get("oi_delta_pct") or 0.0)
+        fr = float(data.get("funding_rate_raw") or 0.0)
+        if abs(oi_delta) > 2.0:
+            if oi_delta > 0:
+                # Determine who is opening: funding sign reveals the dominant side
+                if direction == "LONG" and fr < -0.0001:
+                    # Shorts piling in + negative funding = squeeze fuel for LONG
+                    score += 7.0
+                    notes.append(f"OI +{oi_delta:.1f}% + neg funding = short squeeze building (+7)")
+                elif direction == "SHORT" and fr > 0.0001:
+                    # Longs piling in + positive funding = fade opportunity for SHORT
+                    score += 7.0
+                    notes.append(f"OI +{oi_delta:.1f}% + pos funding = long overextension (+7)")
+                elif direction == "LONG" and fr > 0.0001:
+                    # Longs crowding in = bad for LONG (crowded trade)
+                    score -= 3.0
+                    warnings.append(f"OI rising + pos funding = longs crowding — contradicts LONG")
+                elif direction == "SHORT" and fr < -0.0001:
+                    # Shorts crowding in = bad for SHORT (crowded trade)
+                    score -= 3.0
+                    warnings.append(f"OI rising + neg funding = shorts crowding — contradicts SHORT")
+            else:
+                # OI falling = positions unwinding, trend losing momentum
+                score -= 2.0
+                warnings.append(f"OI declining {oi_delta:.1f}% — de-leveraging in progress")
 
         # ── Liquidation cluster proximity (price magnets) ─────────────────────
         # Uses nearest single cluster size (not sum of all clusters above/below).
@@ -820,3 +879,47 @@ class HyblockMonitor:
                 except (TypeError, ValueError):
                     pass
         return 0.0
+
+    def _parse_cvd(self, data: Dict) -> float:
+        """
+        Cumulative Volume Delta = sum of volumeDelta values across all returned bars.
+        Positive = sustained buying pressure; negative = sustained selling pressure.
+        Returns the raw summed value (units match Hyblock's volumeDelta field).
+        """
+        bars = data.get("data", []) if isinstance(data, dict) else []
+        if not bars:
+            return 0.0
+        total = 0.0
+        for b in bars:
+            if not isinstance(b, dict):
+                continue
+            v = b.get("volumeDelta", b.get("delta", b.get("value", 0.0)))
+            try:
+                total += float(v or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return round(total, 4)
+
+    def _parse_oi_delta(self, data: Dict) -> float:
+        """
+        Open Interest rate of change as a percentage from the first bar's close to
+        the last bar's close across the fetched window.
+        Positive = OI growing (new leverage entering); negative = OI falling (unwinding).
+        """
+        bars = data.get("data", []) if isinstance(data, dict) else []
+        if len(bars) < 2:
+            return 0.0
+        def _bar_val(b: Dict) -> float:
+            for key in ("close", "value", "open"):
+                v = b.get(key)
+                if v is not None:
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        pass
+            return 0.0
+        first_val = _bar_val(bars[0])
+        last_val  = _bar_val(bars[-1])
+        if first_val <= 0:
+            return 0.0
+        return round((last_val - first_val) / first_val * 100, 2)

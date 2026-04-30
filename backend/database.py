@@ -220,6 +220,8 @@ class SignalTick(Base):
     volume_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     buy_sell_count_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     cascade_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    cvd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    oi_delta_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
 async def get_db():
@@ -251,6 +253,8 @@ async def init_db():
             ("volume_ratio", "REAL"),
             ("buy_sell_count_ratio", "REAL"),
             ("cascade_direction", "TEXT"),
+            ("cvd", "REAL"),
+            ("oi_delta_pct", "REAL"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:

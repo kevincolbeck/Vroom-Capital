@@ -623,6 +623,8 @@ class BotEngine:
             volume_ratio=signal.volume_ratio,
             buy_sell_count_ratio=signal.buy_sell_count_ratio,
             cascade_direction=signal.cascade_direction,
+            cvd=hyblock.get("cvd"),
+            oi_delta_pct=hyblock.get("oi_delta_pct"),
         )
         try:
             async with AsyncSessionLocal() as db:
