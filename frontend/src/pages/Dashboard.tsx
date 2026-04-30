@@ -45,32 +45,39 @@ function SignalIndicator({ signal }: { signal: any }) {
       </div>
 
       <div className="space-y-2">
-        {/* HA Trend */}
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500">6H Candle</span>
-          <div className="flex items-center gap-1.5">
-            <span className={clsx('font-mono font-medium',
-              signal.ha_6h_color === 'GREEN' ? 'text-profit' : 'text-loss'
-            )}>
-              {signal.ha_6h_color === 'GREEN' ? '▲' : '▼'} {signal.ha_6h_color || '—'}
-            </span>
-            {signal.ha_6h_trend && (
-              <span className={clsx('text-gray-600 font-mono',
-                signal.ha_6h_trend?.includes('BULLISH') ? 'text-profit/50' : 'text-loss/50'
-              )}>
-                ({signal.ha_6h_trend?.replace('_', ' ').toLowerCase()})
-              </span>
-            )}
+        {/* HA majority vote */}
+        {signal.ha_6h_color && signal.ha_1h_color && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">HA Vote</span>
+            <div className="flex items-center gap-1 font-mono">
+              {[
+                { label: '6H', color: signal.ha_6h_color },
+                { label: '1H', color: signal.ha_1h_color },
+                { label: '3M', color: signal.ha_3m_color },
+              ].map(({ label, color }) => (
+                <span key={label} className={clsx(
+                  'px-1 rounded text-[10px]',
+                  color === 'GREEN' ? 'text-profit bg-profit/10' : color === 'RED' ? 'text-loss bg-loss/10' : 'text-gray-500 bg-dark-600'
+                )}>
+                  {label}
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500">1H Candle</span>
-          <span className={clsx('font-mono font-medium',
-            signal.ha_1h_color === 'GREEN' ? 'text-profit' : 'text-loss'
-          )}>
-            {signal.ha_1h_color === 'GREEN' ? '▲' : '▼'} {signal.ha_1h_color || '—'}
-          </span>
-        </div>
+        )}
+
+        {/* 6H trend */}
+        {signal.ha_6h_trend && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">6H Trend</span>
+            <span className={clsx('font-mono font-medium',
+              signal.ha_6h_trend?.includes('BULLISH') ? 'text-profit' :
+              signal.ha_6h_trend?.includes('BEARISH') ? 'text-loss' : 'text-gray-400'
+            )}>
+              {signal.ha_6h_trend?.replace(/_/g, ' ').toLowerCase()}
+            </span>
+          </div>
+        )}
 
         {/* 6H ratio */}
         {signal.ha_6h_green_count != null && (
@@ -94,6 +101,25 @@ function SignalIndicator({ signal }: { signal: any }) {
             )}>
               {signal.ha_1h_color} × {signal.ha_1h_consecutive}
             </span>
+          </div>
+        )}
+
+        {/* MII */}
+        {signal.hyblock?.market_imbalance_index != null && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">MII</span>
+            <div className="flex items-center gap-1.5">
+              <span className={clsx('font-mono font-medium',
+                signal.hyblock.market_imbalance_index > 0 ? 'text-profit' : 'text-loss'
+              )}>
+                {signal.hyblock.market_imbalance_index > 0 ? '+' : ''}{signal.hyblock.market_imbalance_index?.toFixed(3)}
+              </span>
+              {signal.hyblock.mii_sustained_bars > 0 && (
+                <span className="text-gray-500 font-mono text-[10px]">
+                  {signal.hyblock.mii_sustained_bars}h sustained
+                </span>
+              )}
+            </div>
           </div>
         )}
 
@@ -131,8 +157,8 @@ function SignalIndicator({ signal }: { signal: any }) {
 
         {/* Block reasons */}
         {signal.block_reasons?.length > 0 && (
-          <div className="mt-2 p-2 bg-dark-700 rounded-lg">
-            {signal.block_reasons.slice(0, 2).map((r: string, i: number) => (
+          <div className="mt-2 p-2 bg-dark-700 rounded-lg space-y-1">
+            {signal.block_reasons.map((r: string, i: number) => (
               <div key={i} className="text-xs text-gray-500 flex items-start gap-1">
                 <AlertTriangle size={10} className="text-warning shrink-0 mt-0.5" />
                 <span>{r}</span>
