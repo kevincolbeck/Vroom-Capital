@@ -92,8 +92,9 @@ class BotEngine:
     async def _main_loop(self):
         """Main bot loop.
 
-        When flat  : poll every LOOP_INTERVAL_SECONDS (60s) — 3m HA entries
-                     can fire at any time, not only at hourly candle closes.
+        When flat  : poll every CANDLE_CHECK_SECONDS (15s) — fresh klines keep
+                     forming HA colors current; Hyblock's 60s internal cache
+                     prevents API rate-limit issues on the extra ticks.
         In position: 1s price-only trailing stop + liq cluster TP check,
                      15s candle-based HA exit check,
                      60s full signal refresh.
@@ -123,11 +124,12 @@ class BotEngine:
 
                     await asyncio.sleep(self.PRICE_POLL_SECONDS)
                 else:
-                    # When flat: check for entries every LOOP_INTERVAL_SECONDS
+                    # When flat: re-evaluate entries every 15s so forming HA
+                    # colors stay current (Hyblock uses its own 60s cache).
                     await self._tick()
                     last_full_tick    = _time.monotonic()
                     last_candle_check = _time.monotonic()
-                    await asyncio.sleep(self.LOOP_INTERVAL_SECONDS)
+                    await asyncio.sleep(self.CANDLE_CHECK_SECONDS)
 
             except asyncio.CancelledError:
                 break
