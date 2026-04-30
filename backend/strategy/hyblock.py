@@ -579,21 +579,31 @@ class HyblockMonitor:
         above_pct = above_size = above_price_val = None
         below_pct = below_size = below_price_val = None
 
-        above_levels = [(get_px(l), get_size(l)) for l in levels if get_px(l) > current_price]
-        below_levels = [(get_px(l), get_size(l)) for l in levels if 0 < get_px(l) < current_price]
+        # Only consider clusters within the configured max % range
+        max_pct = settings.liq_cluster_max_pct / 100.0
+        above_levels = [
+            (get_px(l), get_size(l)) for l in levels
+            if get_px(l) > current_price
+            and (get_px(l) - current_price) / current_price <= max_pct
+        ]
+        below_levels = [
+            (get_px(l), get_size(l)) for l in levels
+            if 0 < get_px(l) < current_price
+            and (current_price - get_px(l)) / current_price <= max_pct
+        ]
 
         if above_levels:
-            # Nearest cluster above — use its individual size, not the sum of all clusters
-            nearest_above = min(above_levels, key=lambda x: x[0])
-            above_price_val = round(nearest_above[0], 2)
-            above_pct  = round((nearest_above[0] - current_price) / current_price * 100, 2)
-            above_size = round(nearest_above[1], 2)
+            # Largest cluster within range — the true price magnet, not just the nearest
+            best_above = max(above_levels, key=lambda x: x[1])
+            above_price_val = round(best_above[0], 2)
+            above_pct  = round((best_above[0] - current_price) / current_price * 100, 2)
+            above_size = round(best_above[1], 2)
         if below_levels:
-            # Nearest cluster below — use its individual size, not the sum of all clusters
-            nearest_below = max(below_levels, key=lambda x: x[0])
-            below_price_val = round(nearest_below[0], 2)
-            below_pct  = round((current_price - nearest_below[0]) / current_price * 100, 2)
-            below_size = round(nearest_below[1], 2)
+            # Largest cluster within range
+            best_below = max(below_levels, key=lambda x: x[1])
+            below_price_val = round(best_below[0], 2)
+            below_pct  = round((current_price - best_below[0]) / current_price * 100, 2)
+            below_size = round(best_below[1], 2)
 
         if above_pct is not None and below_pct is not None:
             nearest_side = "ABOVE" if above_pct < below_pct else "BELOW"
