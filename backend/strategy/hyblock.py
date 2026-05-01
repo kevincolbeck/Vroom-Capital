@@ -250,7 +250,7 @@ class HyblockMonitor:
         volume_ratio = self._parse_scalar(raw["volume_ratio"], ("volumeRatio", "ratio", "value", "delta"))
         buy_sell_count = self._parse_scalar(raw["buy_sell_count"], ("buySellTradeCountRatio", "ratio", "value", "delta"))
         liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelSizeDelta", "liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
-        liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelsCountDelta", "countDelta", "delta", "value"))
+        liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelCountDelta", "liqLevelsCountDelta", "countDelta", "delta", "value"))
         cvd = self._parse_cvd(raw["volume_delta_multi"])
         oi_delta = self._parse_oi_delta(raw["oi_multi"])
         cumulative_liq_detail = self._parse_cumulative_liq_detail(raw["cumulative_liq"])

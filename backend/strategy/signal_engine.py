@@ -800,11 +800,11 @@ class SignalEngine:
         _liq_target_str = (
             f"${signal.liq_target_price:,.0f}" if signal.liq_target_price else "none"
         )
+        _long_pct_str  = f"{signal.liq_level_long_pct:.1f}"  if signal.liq_level_long_pct  is not None else "N/A"
+        _short_pct_str = f"{signal.liq_level_short_pct:.1f}" if signal.liq_level_short_pct is not None else "N/A"
         _casc_str = (
-            f"LONG@{signal.liq_level_long_pct:.1f}%/{signal.liq_level_long_size:.0f}BTC "
-            f"SHORT@{signal.liq_level_short_pct:.1f}%/{signal.liq_level_short_size:.0f}BTC"
-            if signal.liq_level_long_pct is not None or signal.liq_level_short_pct is not None
-            else "none"
+            f"LONG@{_long_pct_str}%/{signal.liq_level_long_size:.0f}BTC "
+            f"SHORT@{_short_pct_str}%/{signal.liq_level_short_size:.0f}BTC"
         )
         _mode_str = (
             f"WICK_FADE(24h_high=${_24h_high:,.0f} dist={_dist_from_24h_high_pct:.2f}%)"
