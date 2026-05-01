@@ -232,6 +232,22 @@ class SignalTick(Base):
     liq_below_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # MII sustained bars — consecutive bars MII held above threshold (signal quality)
     mii_sustained_bars: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # WarriorAI-aligned HA scoring components
+    ha_6h_body_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ha_1h_aligned_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Retail/global L/S positioning (contrarian signals)
+    true_retail_long_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    global_accounts_long_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Net long/short positioning delta
+    net_ls_delta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Cumulative liquidation zone bias
+    cumulative_liq_bias: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    # Previous day structure (ABOVE_PDH / BETWEEN / BELOW_PDL)
+    prev_day_structure: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    # Nearest round number zone distance %
+    round_number_dist_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # 4H compression flag
+    is_compressed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
 
 async def get_db():
@@ -272,6 +288,15 @@ async def init_db():
             ("liq_above_size", "REAL"),
             ("liq_below_size", "REAL"),
             ("mii_sustained_bars", "INTEGER"),
+            ("ha_6h_body_pct", "REAL"),
+            ("ha_1h_aligned_count", "INTEGER"),
+            ("true_retail_long_pct", "REAL"),
+            ("global_accounts_long_pct", "REAL"),
+            ("net_ls_delta", "REAL"),
+            ("cumulative_liq_bias", "TEXT"),
+            ("prev_day_structure", "TEXT"),
+            ("round_number_dist_pct", "REAL"),
+            ("is_compressed", "INTEGER"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:

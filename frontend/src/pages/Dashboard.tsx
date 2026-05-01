@@ -104,10 +104,23 @@ function SignalIndicator({ signal }: { signal: any }) {
           </div>
         )}
 
+        {/* Cascade Direction */}
+        {signal.hyblock?.liq_levels?.cascade_direction && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">Cascade Dir</span>
+            <span className={clsx('font-mono font-semibold',
+              signal.hyblock.liq_levels.cascade_direction === 'LONG' ? 'text-profit' : 'text-loss'
+            )}>
+              {signal.hyblock.liq_levels.cascade_direction === 'LONG' ? '▲' : '▼'}{' '}
+              {signal.hyblock.liq_levels.cascade_direction}
+            </span>
+          </div>
+        )}
+
         {/* MII */}
         {signal.hyblock?.market_imbalance_index != null && (
           <div className="flex items-center justify-between text-xs">
-            <span className="text-gray-500">MII</span>
+            <span className="text-gray-500">MII 15m</span>
             <div className="flex items-center gap-1.5">
               <span className={clsx('font-mono font-medium',
                 signal.hyblock.market_imbalance_index > 0.3 ? 'text-profit' :
@@ -119,6 +132,99 @@ function SignalIndicator({ signal }: { signal: any }) {
                 {signal.hyblock.mii_sustained_bars ?? 0}h sustained
               </span>
             </div>
+          </div>
+        )}
+
+        {/* CVD */}
+        {signal.hyblock?.cvd != null && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">CVD</span>
+            <span className={clsx('font-mono font-medium',
+              signal.hyblock.cvd > 0.5 ? 'text-profit' :
+              signal.hyblock.cvd < -0.5 ? 'text-loss' : 'text-gray-400'
+            )}>
+              {signal.hyblock.cvd > 0 ? '+' : ''}{Number(signal.hyblock.cvd).toFixed(2)}
+            </span>
+          </div>
+        )}
+
+        {/* OI Delta */}
+        {signal.hyblock?.oi_delta_pct != null && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">OI Δ</span>
+            <span className={clsx('font-mono font-medium',
+              signal.hyblock.oi_delta_pct > 2 ? 'text-profit' :
+              signal.hyblock.oi_delta_pct < -2 ? 'text-loss' : 'text-gray-400'
+            )}>
+              {signal.hyblock.oi_delta_pct > 0 ? '+' : ''}{Number(signal.hyblock.oi_delta_pct).toFixed(2)}%
+            </span>
+          </div>
+        )}
+
+        {/* HA Scoring Breakdown */}
+        {signal.ha_6h_body_pct != null && (
+          <div className="border-t border-dark-700 pt-2 mt-1 space-y-1.5">
+            <div className="text-gray-600 text-[10px] uppercase tracking-wide">HA Scoring</div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">6H Body</span>
+              <span className={clsx('font-mono font-medium',
+                signal.ha_6h_body_pct >= 20 ? 'text-profit' :
+                signal.ha_6h_body_pct >= 10 ? 'text-warning' : 'text-gray-500'
+              )}>
+                {Number(signal.ha_6h_body_pct).toFixed(1)}%
+                <span className="text-gray-600 ml-1">
+                  ({signal.ha_6h_body_pct >= 20 ? '+30' : signal.ha_6h_body_pct >= 10 ? '+15' : '+0'})
+                </span>
+              </span>
+            </div>
+            {signal.ha_prev_6h_color && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">6H Confirm</span>
+                <span className={clsx('font-mono font-medium',
+                  signal.ha_prev_6h_color === signal.ha_6h_color ? 'text-profit' : 'text-gray-500'
+                )}>
+                  {signal.ha_prev_6h_color === signal.ha_6h_color ? 'YES (+15)' : 'NO (+0)'}
+                </span>
+              </div>
+            )}
+            {signal.ha_1h_aligned_count != null && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">1H Momentum</span>
+                <span className={clsx('font-mono font-medium',
+                  signal.ha_1h_aligned_count >= 3 ? 'text-profit' :
+                  signal.ha_1h_aligned_count >= 2 ? 'text-warning' : 'text-gray-500'
+                )}>
+                  {signal.ha_1h_aligned_count}/4
+                  <span className="text-gray-600 ml-1">(+{(signal.ha_1h_aligned_count / 4 * 40).toFixed(0)})</span>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Retail Positioning */}
+        {signal.hyblock?.true_retail_long_pct != null && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">True Retail</span>
+            <span className={clsx('font-mono font-medium',
+              signal.hyblock.true_retail_long_pct > 60 ? 'text-loss' :
+              signal.hyblock.true_retail_long_pct < 40 ? 'text-profit' : 'text-gray-400'
+            )}>
+              {Number(signal.hyblock.true_retail_long_pct).toFixed(1)}%L / {Number(signal.hyblock.true_retail_short_pct).toFixed(1)}%S
+            </span>
+          </div>
+        )}
+
+        {/* Prev Day Structure */}
+        {signal.hyblock?.prev_day_structure && signal.hyblock.prev_day_structure !== 'UNKNOWN' && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">PD Structure</span>
+            <span className={clsx('font-mono font-medium',
+              signal.hyblock.prev_day_structure === 'ABOVE_PDH' ? 'text-profit' :
+              signal.hyblock.prev_day_structure === 'BELOW_PDL' ? 'text-loss' : 'text-gray-400'
+            )}>
+              {signal.hyblock.prev_day_structure.replace('_', ' ')}
+            </span>
           </div>
         )}
 
@@ -552,20 +658,119 @@ export default function Dashboard() {
                     {hyblockData.fragility_level}
                   </span>
                 </div>
-                {/* Liq clusters */}
+                {/* Volume Ratio */}
+                {hyblockData.volume_ratio != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">Volume Ratio</span>
+                    <span className={clsx('font-mono font-medium',
+                      hyblockData.volume_ratio > 0.1  ? 'text-profit' :
+                      hyblockData.volume_ratio < -0.1 ? 'text-loss' : 'text-gray-400'
+                    )}>
+                      {hyblockData.volume_ratio > 0 ? '+' : ''}{Number(hyblockData.volume_ratio).toFixed(3)}
+                    </span>
+                  </div>
+                )}
+                {/* Buy/Sell Count Ratio */}
+                {hyblockData.buy_sell_count_ratio != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">B/S Count</span>
+                    <span className={clsx('font-mono font-medium',
+                      hyblockData.buy_sell_count_ratio > 0.1  ? 'text-profit' :
+                      hyblockData.buy_sell_count_ratio < -0.1 ? 'text-loss' : 'text-gray-400'
+                    )}>
+                      {hyblockData.buy_sell_count_ratio > 0 ? '+' : ''}{Number(hyblockData.buy_sell_count_ratio).toFixed(3)}
+                    </span>
+                  </div>
+                )}
+                {/* CVD */}
+                {hyblockData.cvd != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">CVD (20 bars)</span>
+                    <span className={clsx('font-mono font-medium',
+                      hyblockData.cvd > 0.5  ? 'text-profit' :
+                      hyblockData.cvd < -0.5 ? 'text-loss' : 'text-gray-400'
+                    )}>
+                      {hyblockData.cvd > 0 ? '+' : ''}{Number(hyblockData.cvd).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+                {/* OI Delta */}
+                {hyblockData.oi_delta_pct != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-500">OI Delta</span>
+                    <span className={clsx('font-mono font-medium',
+                      hyblockData.oi_delta_pct > 2  ? 'text-profit' :
+                      hyblockData.oi_delta_pct < -2 ? 'text-loss' : 'text-gray-400'
+                    )}>
+                      {hyblockData.oi_delta_pct > 0 ? '+' : ''}{Number(hyblockData.oi_delta_pct).toFixed(2)}%
+                    </span>
+                  </div>
+                )}
+                {/* Liq Level Cascade */}
+                {hyblockData.liq_levels?.cascade_direction && (
+                  <div className="border-t border-dark-700 pt-2 space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500 font-medium">Liq Cascade</span>
+                      <span className={clsx('font-mono font-semibold text-xs',
+                        hyblockData.liq_levels.cascade_direction === 'LONG' ? 'text-profit' : 'text-loss'
+                      )}>
+                        {hyblockData.liq_levels.cascade_direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}
+                      </span>
+                    </div>
+                    {hyblockData.liq_levels.long_cluster_pct != null && (
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-gray-600">LONG cluster ↓</span>
+                        <span className="font-mono text-profit/80">
+                          -{hyblockData.liq_levels.long_cluster_pct?.toFixed(2)}%
+                          {hyblockData.liq_levels.long_cluster_size > 0 && (
+                            <span className="text-gray-500"> · {hyblockData.liq_levels.long_cluster_size?.toFixed(0)} BTC</span>
+                          )}
+                          {hyblockData.liq_levels.long_cluster_price && (
+                            <span className="text-gray-600"> @ {formatPrice(hyblockData.liq_levels.long_cluster_price)}</span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                    {hyblockData.liq_levels.short_cluster_pct != null && (
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-gray-600">SHORT cluster ↑</span>
+                        <span className="font-mono text-loss/80">
+                          +{hyblockData.liq_levels.short_cluster_pct?.toFixed(2)}%
+                          {hyblockData.liq_levels.short_cluster_size > 0 && (
+                            <span className="text-gray-500"> · {hyblockData.liq_levels.short_cluster_size?.toFixed(0)} BTC</span>
+                          )}
+                          {hyblockData.liq_levels.short_cluster_price && (
+                            <span className="text-gray-600"> @ {formatPrice(hyblockData.liq_levels.short_cluster_price)}</span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Liq clusters (heatmap) */}
                 {(hyblockData.liq_clusters?.above_pct || hyblockData.liq_clusters?.below_pct) && (
                   <div className="border-t border-dark-700 pt-2 space-y-1">
-                    <div className="text-gray-500 mb-1">Liq Clusters</div>
+                    <div className="text-gray-500 mb-1">Liq Heatmap</div>
                     {hyblockData.liq_clusters.above_pct != null && (
-                      <div className="flex justify-between">
+                      <div className="flex justify-between text-[11px]">
                         <span className="text-gray-600">Above</span>
-                        <span className="font-mono text-loss/80">+{hyblockData.liq_clusters.above_pct}%</span>
+                        <span className="font-mono text-loss/80">
+                          +{hyblockData.liq_clusters.above_pct}%
+                          {hyblockData.liq_clusters.above_size > 0 && (
+                            <span className="text-gray-500"> · {Number(hyblockData.liq_clusters.above_size).toFixed(0)} BTC</span>
+                          )}
+                        </span>
                       </div>
                     )}
                     {hyblockData.liq_clusters.below_pct != null && (
-                      <div className="flex justify-between">
+                      <div className="flex justify-between text-[11px]">
                         <span className="text-gray-600">Below</span>
-                        <span className="font-mono text-profit/80">-{hyblockData.liq_clusters.below_pct}%</span>
+                        <span className="font-mono text-profit/80">
+                          -{hyblockData.liq_clusters.below_pct}%
+                          {hyblockData.liq_clusters.below_size > 0 && (
+                            <span className="text-gray-500"> · {Number(hyblockData.liq_clusters.below_size).toFixed(0)} BTC</span>
+                          )}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -573,7 +778,7 @@ export default function Dashboard() {
                 {/* Market Imbalance Index */}
                 {hyblockData.market_imbalance_index != null && (
                   <div className="flex justify-between items-center">
-                    <span className="text-gray-500">Mkt Imbalance</span>
+                    <span className="text-gray-500">MII 15m</span>
                     <span className={clsx('font-mono font-medium',
                       hyblockData.market_imbalance_index > 0.1  ? 'text-profit' :
                       hyblockData.market_imbalance_index < -0.1 ? 'text-loss' : 'text-gray-400'
@@ -582,6 +787,87 @@ export default function Dashboard() {
                     </span>
                   </div>
                 )}
+                {/* True Retail + Global Accounts */}
+                {hyblockData.true_retail_long_pct != null && (
+                  <div className="border-t border-dark-700 pt-2 space-y-1.5">
+                    <div className="text-gray-500 mb-1">Positioning (Contrarian)</div>
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-gray-600">True Retail</span>
+                      <span className={clsx('font-mono',
+                        hyblockData.true_retail_long_pct > 60 ? 'text-loss' :
+                        hyblockData.true_retail_long_pct < 40 ? 'text-profit' : 'text-gray-400'
+                      )}>
+                        {Number(hyblockData.true_retail_long_pct).toFixed(1)}%L / {Number(hyblockData.true_retail_short_pct).toFixed(1)}%S
+                      </span>
+                    </div>
+                    {hyblockData.global_accounts_long_pct != null && (
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-gray-600">Global Accts</span>
+                        <span className={clsx('font-mono',
+                          hyblockData.global_accounts_long_pct > 60 ? 'text-loss' :
+                          hyblockData.global_accounts_long_pct < 40 ? 'text-profit' : 'text-gray-400'
+                        )}>
+                          {Number(hyblockData.global_accounts_long_pct).toFixed(1)}%L / {Number(hyblockData.global_accounts_short_pct).toFixed(1)}%S
+                        </span>
+                      </div>
+                    )}
+                    {hyblockData.net_ls_delta != null && (
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-gray-600">Net L/S Δ</span>
+                        <span className={clsx('font-mono',
+                          hyblockData.net_ls_delta > 0.05 ? 'text-profit' :
+                          hyblockData.net_ls_delta < -0.05 ? 'text-loss' : 'text-gray-400'
+                        )}>
+                          {hyblockData.net_ls_delta > 0 ? '+' : ''}{Number(hyblockData.net_ls_delta).toFixed(3)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Previous Day Levels */}
+                {hyblockData.prev_day_structure && hyblockData.prev_day_structure !== 'UNKNOWN' && (
+                  <div className="border-t border-dark-700 pt-2 space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-500">PD Structure</span>
+                      <span className={clsx('font-mono font-semibold text-xs',
+                        hyblockData.prev_day_structure === 'ABOVE_PDH' ? 'text-profit' :
+                        hyblockData.prev_day_structure === 'BELOW_PDL' ? 'text-loss' : 'text-gray-400'
+                      )}>
+                        {hyblockData.prev_day_structure.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-gray-600">PDH / PDL</span>
+                      <span className="font-mono text-gray-500">
+                        {hyblockData.prev_day_high ? formatPrice(hyblockData.prev_day_high) : '—'} / {hyblockData.prev_day_low ? formatPrice(hyblockData.prev_day_low) : '—'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {/* Cumulative Liq Bias + Compression */}
+                <div className="border-t border-dark-700 pt-2 space-y-1.5">
+                  {hyblockData.cumulative_liq_bias && hyblockData.cumulative_liq_bias !== 'BALANCED' && (
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-gray-500">Liq Zone Bias</span>
+                      <span className={clsx('font-mono font-medium',
+                        hyblockData.cumulative_liq_bias === 'SHORT_HEAVY' ? 'text-profit' :
+                        hyblockData.cumulative_liq_bias === 'LONG_HEAVY' ? 'text-loss' : 'text-gray-400'
+                      )}>
+                        {hyblockData.cumulative_liq_bias?.replace('_', ' ')}
+                      </span>
+                    </div>
+                  )}
+                  {hyblockData.is_compressed != null && (
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-gray-500">4H Compression</span>
+                      <span className={clsx('font-mono',
+                        hyblockData.is_compressed ? 'text-warning' : 'text-gray-400'
+                      )}>
+                        {hyblockData.is_compressed ? `⚡ COMPRESSED (${Number(hyblockData.compression_ratio).toFixed(2)}x)` : `${Number(hyblockData.compression_ratio ?? 1).toFixed(2)}x normal`}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {/* Avg leverage */}
                 {hyblockData.avg_leverage_raw > 0 && (
                   <div className="flex justify-between items-center border-t border-dark-700 pt-2">

@@ -150,6 +150,9 @@ async def get_bot_status(
 async def start_bot(user: str = Depends(verify_token)):
     engine = get_bot_engine()
     if engine.is_running:
+        if engine.is_paused():
+            await engine.resume()
+            return {"message": "Bot resumed", "status": "RUNNING"}
         return {"message": "Bot is already running", "status": "RUNNING"}
     await engine.start()
     return {"message": "Bot started", "status": "RUNNING"}

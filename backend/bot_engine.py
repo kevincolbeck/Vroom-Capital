@@ -21,7 +21,7 @@ class BotEngine:
 
     LOOP_INTERVAL_SECONDS = 60      # Full signal scan when flat
     CANDLE_CHECK_SECONDS  = 15      # HA-based exit check (needs klines)
-    PRICE_POLL_SECONDS    = 1       # Trailing stop check (ticker only)
+    PRICE_POLL_SECONDS    = 0.1     # Trailing stop check (ticker only) — 10x/s (Bitunix limit)
 
     def __init__(self):
         self.signal_engine = SignalEngine()
@@ -637,6 +637,25 @@ class BotEngine:
             liq_below_size=liq.get("below_size"),
             # MII sustained bars
             mii_sustained_bars=hyblock.get("mii_sustained_bars"),
+            # WarriorAI-aligned HA scoring components
+            ha_6h_body_pct=signal.ha_6h_body_pct,
+            ha_1h_aligned_count=signal.ha_1h_aligned_count,
+            # Retail/global positioning (contrarian signals)
+            true_retail_long_pct=hyblock.get("true_retail_long_pct"),
+            global_accounts_long_pct=hyblock.get("global_accounts_long_pct"),
+            # Net long/short delta
+            net_ls_delta=hyblock.get("net_ls_delta"),
+            # Cumulative liq zone bias
+            cumulative_liq_bias=hyblock.get("cumulative_liq_bias"),
+            # Previous day structure
+            prev_day_structure=hyblock.get("prev_day_structure"),
+            # Round number zone proximity (nearest $5K level distance)
+            round_number_dist_pct=min(
+                abs(price - r) / price * 100
+                for r in [65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000]
+            ),
+            # 4H compression flag
+            is_compressed=hyblock.get("is_compressed"),
         )
         try:
             async with AsyncSessionLocal() as db:

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     velocity_threshold_pct: float = Field(default=1.5)
     velocity_window_hours: int = Field(default=2)
     zone_size_usd: float = Field(default=1000.0)
-    zone_cooldown_minutes: int = Field(default=5)
+    zone_cooldown_minutes: int = Field(default=30)
     emergency_candles: int = Field(default=4)
 
     # Liq cluster scalping entry gates
@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     min_liq_cluster_btc: float = Field(default=300.0)     # nearest single cluster must have ≥ this BTC to count
     liq_cluster_max_pct: float = Field(default=2.0)       # cluster must be within this % of price
     fomc_caution_days: int = Field(default=7)
+    ha_6h_level_proximity_pct: float = Field(default=1.5) # price must be within this % of completed 6h HA high (SHORT) or low (LONG)
+    range_extreme_proximity_pct: float = Field(default=1.0) # wick fade: price must be within this % of 24h high/low to trigger counter-trend entry
 
     # Bot control
     bot_enabled: bool = Field(default=False)
