@@ -672,6 +672,9 @@ class BotEngine:
             # Gap 3 — 3m HA momentum burst
             ha_3m_aligned_count=signal.ha_3m_aligned_count,
             ha_3m_expanding=signal.ha_3m_expanding,
+            # Spot/futures divergence
+            cvd_spot=hyblock.get("cvd_spot"),
+            basis_pct=(signal.spot_flow_analysis or {}).get("basis_pct"),
         )
         try:
             async with AsyncSessionLocal() as db:

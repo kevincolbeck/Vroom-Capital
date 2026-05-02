@@ -57,6 +57,17 @@ class SpotOrderFlowMonitor:
             logger.debug(f"Binance spot depth failed: {e}")
             return None
 
+    async def _fetch_binance_spot_price(self, client: httpx.AsyncClient) -> Optional[float]:
+        try:
+            resp = await client.get(
+                f"{self.BINANCE_URL}/api/v3/ticker/price",
+                params={"symbol": "BTCUSDT"},
+            )
+            return float(resp.json()["price"])
+        except Exception as e:
+            logger.debug(f"Binance spot price failed: {e}")
+            return None
+
     async def _fetch_coinbase_depth(self, client: httpx.AsyncClient) -> Optional[Dict]:
         try:
             resp = await client.get(
@@ -198,17 +209,19 @@ class SpotOrderFlowMonitor:
 
     async def fetch_all(self, current_price: float, oi_trend: str = "FLAT") -> Dict:
         """Fetch spot order books from all exchanges and return unified analysis."""
-        # Use cached books but recompute price-dependent values
+        # Use cached books but recompute price-dependent values (basis always fresh)
         if self._cache and (time.time() - self._cache_time) < self.CACHE_SECONDS:
             books = self._cached_books
             pressure = self._compute_pressure(books, current_price)
             walls    = self._find_walls(books, current_price)
+            basis_pct = self._cache.get("basis_pct", 0.0)
             return {
                 **self._cache,
                 "pressure":    pressure,
                 "walls":       walls[:10],
                 "whale_walls": [w for w in walls if w["is_whale"]][:3],
                 "divergence":  self._compute_divergence(pressure["pressure"], oi_trend),
+                "basis_pct":   basis_pct,
             }
 
         try:
@@ -217,14 +230,23 @@ class SpotOrderFlowMonitor:
                     self._fetch_binance_depth(client),
                     self._fetch_coinbase_depth(client),
                     self._fetch_kraken_depth(client),
+                    self._fetch_binance_spot_price(client),
                     return_exceptions=True,
                 )
 
-            books     = [r for r in results if r and not isinstance(r, Exception)]
+            depth_results = results[:3]
+            spot_price_result = results[3]
+
+            books     = [r for r in depth_results if r and not isinstance(r, Exception)]
             exchanges = [b["exchange"] for b in books]
             pressure  = self._compute_pressure(books, current_price)
             walls     = self._find_walls(books, current_price)
             divergence = self._compute_divergence(pressure["pressure"], oi_trend)
+
+            # Basis = (perpetual_price - spot_price) / spot_price * 100
+            # Positive = futures at premium; Negative = futures at discount
+            spot_price = spot_price_result if isinstance(spot_price_result, float) else None
+            basis_pct = round((current_price - spot_price) / spot_price * 100, 4) if spot_price else 0.0
 
             result = {
                 "exchanges":      exchanges,
@@ -233,6 +255,8 @@ class SpotOrderFlowMonitor:
                 "walls":          walls[:10],
                 "whale_walls":    [w for w in walls if w["is_whale"]][:3],
                 "divergence":     divergence,
+                "spot_price":     spot_price,
+                "basis_pct":      basis_pct,
                 "available":      len(books) > 0,
             }
 
@@ -248,6 +272,8 @@ class SpotOrderFlowMonitor:
                 "pressure":  {"bid_usd": 0, "ask_usd": 0, "ratio": 1.0, "pressure": "NEUTRAL"},
                 "walls": [], "whale_walls": [],
                 "divergence": "NEUTRAL",
+                "spot_price": None,
+                "basis_pct":  0.0,
                 "available": False,
             }
 
@@ -293,7 +319,7 @@ class SpotOrderFlowMonitor:
             score -= 3.0
             parts.append("spot bid-heavy — caution for SHORT")
 
-        # Spot vs futures divergence
+        # Spot vs futures divergence (orderbook pressure vs OI trend)
         bullish_div = divergence in ("ALIGNED_BULLISH", "DIVERGENT_BULLISH")
         bearish_div = divergence in ("ALIGNED_BEARISH", "DIVERGENT_BEARISH")
         if direction == "LONG" and bullish_div:
@@ -303,5 +329,29 @@ class SpotOrderFlowMonitor:
             score += self.DIVERGENCE_SCORE
             parts.append(f"spot/futures {divergence.lower().replace('_', ' ')}")
 
-        desc = " | ".join(parts) if parts else f"Spot flow neutral (pressure={pressure})"
+        # Perpetual basis (futures premium/discount vs spot price)
+        # Positive basis = futures at premium (longs paying extra = overextension signal)
+        # Negative basis = futures at discount (shorts paying = capitulation / undervalued)
+        basis_pct = float(analysis.get("basis_pct") or 0.0)
+        if abs(basis_pct) >= 0.05:
+            if basis_pct > 0:
+                # Futures premium: confirms SHORT (overextension), caution for LONG
+                if direction == "SHORT":
+                    basis_pts = 5.0 if basis_pct >= 0.15 else 2.0
+                    score += basis_pts
+                    parts.append(f"perp +{basis_pct:.3f}% premium vs spot → SHORT fuel (+{basis_pts:.0f})")
+                else:
+                    score -= 2.0
+                    parts.append(f"perp +{basis_pct:.3f}% premium vs spot — futures frothy caution for LONG")
+            else:
+                # Futures discount: confirms LONG (capitulation), caution for SHORT
+                if direction == "LONG":
+                    basis_pts = 5.0 if basis_pct <= -0.15 else 2.0
+                    score += basis_pts
+                    parts.append(f"perp {basis_pct:.3f}% discount vs spot → LONG fuel (+{basis_pts:.0f})")
+                else:
+                    score -= 2.0
+                    parts.append(f"perp {basis_pct:.3f}% discount vs spot — futures weak caution for SHORT")
+
+        desc = " | ".join(parts) if parts else f"Spot flow neutral (pressure={pressure}, basis={basis_pct:+.3f}%)"
         return score, desc

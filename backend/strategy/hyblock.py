@@ -175,6 +175,8 @@ class HyblockMonitor:
         p_flow     = {"coin": COIN, "timeframe": "1h", "limit": 5, "marketTypes": "perpetuals"}
         # CVD: 20 bars of volumeDelta, multi-exchange perpetuals
         p_cvd      = {"coin": COIN, "timeframe": "1h", "limit": 20, "marketTypes": "perpetuals"}
+        # Spot CVD: same window, spot exchanges — for divergence detection
+        p_cvd_spot = {"coin": COIN, "timeframe": "1h", "limit": 20, "marketTypes": "spot"}
         # OI: 17-exchange aggregate
         p_oi       = {"coin": COIN, "exchange": OI_EXCHANGES, "timeframe": "1h", "limit": 5}
         # OI multi-bar: 5 bars for rate-of-change, 17-exchange aggregate
@@ -195,7 +197,7 @@ class HyblockMonitor:
                 "liq_levels_size", "liq_levels_count",
                 "volume_ratio", "buy_sell_count",
                 # CVD and OI multi-bar (full response, not unwrapped)
-                "volume_delta_multi", "oi_multi",
+                "volume_delta_multi", "cvd_spot", "oi_multi",
                 # WarriorAI-aligned signals
                 "true_retail", "global_accts", "net_ls_delta", "prev_day", "kline_4h",
             ]
@@ -225,6 +227,8 @@ class HyblockMonitor:
                 self._fetch(client, "buySellTradeCountRatio", p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
                 # CVD: 20 bars of volumeDelta, multi-exchange perpetuals
                 self._fetch(client, "volumeDelta",            p_cvd,      unwrap_latest=False),
+                # Spot CVD: same window but spot exchanges (gracefully returns {} on 422)
+                self._fetch(client, "volumeDelta",            p_cvd_spot, unwrap_latest=False),
                 # OI multi-bar: 5 bars for rate-of-change, 17-exchange aggregate
                 self._fetch(client, "openInterest",           p_oi_multi, unwrap_latest=False),
                 # WarriorAI-aligned: retail/global L/S (single-only), net positioning, PDH/PDL, 4H compression
@@ -260,6 +264,7 @@ class HyblockMonitor:
         liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelSizeDelta", "liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
         liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelCountDelta", "liqLevelsCountDelta", "countDelta", "delta", "value"))
         cvd = self._parse_cvd(raw["volume_delta_multi"])
+        cvd_spot = self._parse_cvd(raw["cvd_spot"])
         oi_delta = self._parse_oi_delta(raw["oi_multi"])
         cumulative_liq_detail = self._parse_cumulative_liq_detail(raw["cumulative_liq"])
         true_retail = self._parse_retail_ratio(raw["true_retail"])
@@ -301,6 +306,7 @@ class HyblockMonitor:
             "liq_levels_size_delta": liq_levels_size,
             "liq_levels_count_delta": liq_levels_count,
             "cvd": cvd,
+            "cvd_spot": cvd_spot,
             "oi_delta_pct": oi_delta,
             # Cumulative liq zone exposure (long vs short $ outstanding)
             **cumulative_liq_detail,
@@ -498,6 +504,45 @@ class HyblockMonitor:
             else:
                 score -= 3.0
                 warnings.append(f"CVD contradicts {direction} ({cvd:+.2f})")
+
+        # ── Spot CVD vs Futures CVD divergence ───────────────────────────────
+        # Spot CVD positive + Futures CVD negative = real money accumulating while
+        # leverage sells → strongest divergence signal (smart money vs paper hands).
+        # Spot CVD negative + Futures CVD positive = distribution while futures pile in.
+        # Both aligned = confirms the direction (additional conviction).
+        cvd_spot = float(data.get("cvd_spot") or 0.0)
+        cvd_futures = float(data.get("cvd") or 0.0)
+        _spot_buy = cvd_spot > 0.01
+        _spot_sell = cvd_spot < -0.01
+        _fut_buy = cvd_futures > 0.01
+        _fut_sell = cvd_futures < -0.01
+        _spot_meaningful = abs(cvd_spot) > 0.01
+
+        if _spot_meaningful:
+            if direction == "LONG":
+                if _spot_buy and _fut_sell:
+                    # Classic bullish divergence: spot accumulating, futures capitulating
+                    score += 8.0
+                    notes.append(f"spot CVD +{cvd_spot:.2f} vs futures CVD {cvd_futures:.2f} — bullish divergence (+8)")
+                elif _spot_buy and _fut_buy:
+                    # Both buying — extra conviction
+                    score += 3.0
+                    notes.append(f"spot+futures CVD both positive — aligned buying (+3)")
+                elif _spot_sell:
+                    score -= 4.0
+                    warnings.append(f"spot CVD {cvd_spot:.2f} negative — real money selling contradicts LONG")
+            elif direction == "SHORT":
+                if _spot_sell and _fut_buy:
+                    # Classic bearish divergence: spot distributing, futures piling in
+                    score += 8.0
+                    notes.append(f"spot CVD {cvd_spot:.2f} vs futures CVD +{cvd_futures:.2f} — bearish divergence (+8)")
+                elif _spot_sell and _fut_sell:
+                    # Both selling — extra conviction
+                    score += 3.0
+                    notes.append(f"spot+futures CVD both negative — aligned selling (+3)")
+                elif _spot_buy:
+                    score -= 4.0
+                    warnings.append(f"spot CVD +{cvd_spot:.2f} positive — real money buying contradicts SHORT")
 
         # ── Open Interest Delta ───────────────────────────────────────────────
         # Rising OI + negative funding → new SHORT positions piling in = squeeze fuel → confirms LONG

@@ -254,6 +254,9 @@ class SignalTick(Base):
     # Gap 3 — 3m HA momentum burst
     ha_3m_aligned_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ha_3m_expanding: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # Spot/futures divergence
+    cvd_spot: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    basis_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
 async def get_db():
@@ -309,6 +312,9 @@ async def init_db():
             # Gap 3 — 3m HA momentum burst
             ("ha_3m_aligned_count", "INTEGER"),
             ("ha_3m_expanding", "INTEGER"),
+            # Spot/futures divergence
+            ("cvd_spot", "REAL"),
+            ("basis_pct", "REAL"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:
