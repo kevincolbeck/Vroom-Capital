@@ -759,9 +759,10 @@ export default function Dashboard() {
                             const useWide = !(hyblockData.liq_clusters.above_size > 0) && (hyblockData.liq_clusters.above_wide_size > 0);
                             const pct = useWide ? hyblockData.liq_clusters.above_wide_pct : hyblockData.liq_clusters.above_pct;
                             const size = useWide ? hyblockData.liq_clusters.above_wide_size : hyblockData.liq_clusters.above_size;
+                            const sizeStr = size >= 1 ? Number(size).toFixed(0) : Number(size).toFixed(2);
                             return <>
                               +{pct}%
-                              {size > 0 && <span className="text-gray-500"> · {Number(size).toFixed(0)} BTC</span>}
+                              {size > 0 && <span className="text-gray-500"> · {sizeStr} BTC</span>}
                             </>;
                           })()}
                         </span>
@@ -775,9 +776,10 @@ export default function Dashboard() {
                             const useWide = !(hyblockData.liq_clusters.below_size > 0) && (hyblockData.liq_clusters.below_wide_size > 0);
                             const pct = useWide ? hyblockData.liq_clusters.below_wide_pct : hyblockData.liq_clusters.below_pct;
                             const size = useWide ? hyblockData.liq_clusters.below_wide_size : hyblockData.liq_clusters.below_size;
+                            const sizeStr = size >= 1 ? Number(size).toFixed(0) : Number(size).toFixed(2);
                             return <>
                               -{pct}%
-                              {size > 0 && <span className="text-gray-500"> · {Number(size).toFixed(0)} BTC</span>}
+                              {size > 0 && <span className="text-gray-500"> · {sizeStr} BTC</span>}
                             </>;
                           })()}
                         </span>
