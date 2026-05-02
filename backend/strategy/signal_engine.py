@@ -422,7 +422,7 @@ class SignalEngine:
         # When price is at the 24h range extreme AND Hyblock OBI strongly opposes
         # the 6h HA direction, override to a counter-trend wick fade scalp.
         # This captures shorting upper wicks at 24h resistance (and vice versa for longs).
-        obi_dir   = hyblock_data.get("obi_direction", "NEUTRAL")
+        obi_dir   = hyblock_data.get("obi_slope_direction", "NEUTRAL")
         whale     = hyblock_data.get("whale_sentiment", "NEUTRAL")
         casc_risk = hyblock_data.get("cascade_risk", "LOW")
 
@@ -437,8 +437,7 @@ class SignalEngine:
 
         if (
             _dist_from_24h_high_pct <= _range_prox
-            and obi_dir == "SHORT"
-            and whale in ("BEARISH", "NEUTRAL")
+            and obi_dir == "BEARISH"
             and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
             and candidate_direction != "SHORT"
         ):
@@ -450,8 +449,7 @@ class SignalEngine:
             )
         elif (
             _dist_from_24h_low_pct <= _range_prox
-            and obi_dir == "LONG"
-            and whale in ("BULLISH", "NEUTRAL")
+            and obi_dir == "BULLISH"
             and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
             and candidate_direction != "LONG"
         ):
@@ -674,13 +672,15 @@ class SignalEngine:
             score += _trend_pts
             _breakdown.append(f"6h_confirm={'YES' if _prev_matches else 'NO'}/{'aligned' if _6h_aligned else 'opposing'}({_trend_pts:+.0f})")
 
-            # ── 4x 1h HA momentum count (max 40, sliding scale) ───────────────
+            # ── 4x 1h HA momentum count (max 40, symmetric) ──────────────────
+            # Opposing candles penalize: 4/4 aligned=+40, 2/4=0, 0/4=-40.
             _1h_target = "GREEN" if candidate_direction == "LONG" else "RED"
             _last4_1h = ha_1h[-4:] if len(ha_1h) >= 4 else ha_1h
             _aligned = sum(1 for c in _last4_1h if c["color"] == _1h_target)
             signal.ha_1h_aligned_count = _aligned
             _n = len(_last4_1h)
-            _momentum_pts = (_aligned / _n) * 40.0 if _n > 0 else 0.0
+            _net = _aligned - (_n - _aligned)  # range -n to +n
+            _momentum_pts = (_net / _n) * 40.0 if _n > 0 else 0.0
             score += _momentum_pts
             _breakdown.append(f"1h_momentum={_aligned}/{_n}({_momentum_pts:+.0f})")
 
