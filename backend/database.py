@@ -248,6 +248,12 @@ class SignalTick(Base):
     round_number_dist_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # 4H compression flag
     is_compressed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    # Gap 2 — 3m velocity toward liq target
+    velocity_toward_target: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    velocity_pct_3m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Gap 3 — 3m HA momentum burst
+    ha_3m_aligned_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ha_3m_expanding: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
 
 async def get_db():
@@ -297,6 +303,12 @@ async def init_db():
             ("prev_day_structure", "TEXT"),
             ("round_number_dist_pct", "REAL"),
             ("is_compressed", "INTEGER"),
+            # Gap 2 — 3m velocity toward liq target
+            ("velocity_toward_target", "INTEGER"),
+            ("velocity_pct_3m", "REAL"),
+            # Gap 3 — 3m HA momentum burst
+            ("ha_3m_aligned_count", "INTEGER"),
+            ("ha_3m_expanding", "INTEGER"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:

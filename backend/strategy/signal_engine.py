@@ -73,6 +73,14 @@ class TradeSignal:
         self.ha_6h_low: float = 0.0              # completed 6h HA candle low
         self.wick_fade_mode: bool = False        # True when counter-trend wick fade at 24h extreme
 
+        # Gap 2: 3m price velocity toward liq target
+        self.velocity_toward_target: Optional[bool] = None  # True=toward, False=away, None=N/A
+        self.velocity_pct_3m: float = 0.0                   # abs magnitude of 3m price move %
+
+        # Gap 3: 3m HA momentum burst components
+        self.ha_3m_aligned_count: int = 0    # out of last 3 3m candles, how many match direction
+        self.ha_3m_expanding: bool = False   # True if last body > first body in last 3 candles
+
         self.generated_at: datetime = datetime.utcnow()
 
     def to_dict(self) -> Dict:
@@ -115,6 +123,12 @@ class TradeSignal:
             "ha_6h_high": round(self.ha_6h_high, 1),
             "ha_6h_low": round(self.ha_6h_low, 1),
             "wick_fade_mode": self.wick_fade_mode,
+            # Gap 2 — 3m velocity toward liq target
+            "velocity_toward_target": self.velocity_toward_target,
+            "velocity_pct_3m": round(self.velocity_pct_3m, 4),
+            # Gap 3 — 3m momentum burst
+            "ha_3m_aligned_count": self.ha_3m_aligned_count,
+            "ha_3m_expanding": self.ha_3m_expanding,
             "generated_at": self.generated_at.isoformat(),
         }
 
@@ -726,6 +740,8 @@ class SignalEngine:
                     else _price_delta_3m < 0
                 )
                 _vel_pct_3m = abs(_price_delta_3m) / current_price * 100
+                signal.velocity_toward_target = _toward_target
+                signal.velocity_pct_3m = _vel_pct_3m
                 if _toward_target:
                     _vel_pts = 5.0 if _vel_pct_3m >= 0.1 else 2.0
                     score += _vel_pts
@@ -748,6 +764,8 @@ class SignalEngine:
             _3m_bodies = [c.get("body", 0.0) for c in _last3_3m]
             _3m_expanding = len(_3m_bodies) >= 2 and _3m_bodies[-1] > _3m_bodies[0]
             _3m_n = len(_last3_3m)
+            signal.ha_3m_aligned_count = _3m_aligned
+            signal.ha_3m_expanding = _3m_expanding
             if _3m_aligned == _3m_n and _3m_expanding:
                 _3m_pts = 8.0   # full burst: all candles aligned + body expanding
             elif _3m_aligned == _3m_n:

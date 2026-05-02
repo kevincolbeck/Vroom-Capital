@@ -656,6 +656,12 @@ class BotEngine:
             ),
             # 4H compression flag
             is_compressed=hyblock.get("is_compressed"),
+            # Gap 2 — 3m velocity toward liq target
+            velocity_toward_target=signal.velocity_toward_target,
+            velocity_pct_3m=signal.velocity_pct_3m,
+            # Gap 3 — 3m HA momentum burst
+            ha_3m_aligned_count=signal.ha_3m_aligned_count,
+            ha_3m_expanding=signal.ha_3m_expanding,
         )
         try:
             async with AsyncSessionLocal() as db:

@@ -199,6 +199,25 @@ function SignalIndicator({ signal }: { signal: any }) {
                 </span>
               </div>
             )}
+            {/* 3m Burst — Gap 3 */}
+            {signal.ha_3m_aligned_count != null && !signal.wick_fade_mode && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">3M Burst</span>
+                <span className={clsx('font-mono font-medium',
+                  signal.ha_3m_aligned_count === 3 && signal.ha_3m_expanding ? 'text-profit' :
+                  signal.ha_3m_aligned_count === 3 ? 'text-profit/70' :
+                  signal.ha_3m_aligned_count >= 2 ? 'text-warning' : 'text-gray-500'
+                )}>
+                  {signal.ha_3m_aligned_count}/3
+                  {signal.ha_3m_expanding ? ' ↑' : ''}
+                  <span className="text-gray-600 ml-1">
+                    ({signal.ha_3m_aligned_count === 3 && signal.ha_3m_expanding ? '+8' :
+                      signal.ha_3m_aligned_count === 3 ? '+5' :
+                      signal.ha_3m_aligned_count >= 2 ? '+2' : '-3'})
+                  </span>
+                </span>
+              </div>
+            )}
           </div>
         )}
 
@@ -234,7 +253,7 @@ function SignalIndicator({ signal }: { signal: any }) {
           <span className="font-mono text-gray-300">{signal.zone_key || '—'} ({signal.zone_position || '—'})</span>
         </div>
 
-        {/* Velocity */}
+        {/* 2H Velocity filter */}
         {signal.velocity && (
           <div className="flex items-center justify-between text-xs">
             <span className="text-gray-500">2H Velocity</span>
@@ -242,6 +261,23 @@ function SignalIndicator({ signal }: { signal: any }) {
               (signal.velocity.pct_change || 0) > 0 ? 'text-profit' : 'text-loss'
             )}>
               {signal.velocity.pct_change != null ? formatPct(signal.velocity.pct_change) : '—'}
+            </span>
+          </div>
+        )}
+        {/* 3m momentum toward liq target — Gap 2 */}
+        {signal.velocity_toward_target != null && signal.liq_target_price && !signal.wick_fade_mode && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">3M→ Target</span>
+            <span className={clsx('font-mono font-medium',
+              signal.velocity_toward_target ? 'text-profit' : 'text-loss'
+            )}>
+              {signal.velocity_toward_target ? '▲ toward' : '▼ away'}
+              <span className="text-gray-600 ml-1">
+                {signal.velocity_pct_3m ? `${Number(signal.velocity_pct_3m).toFixed(3)}%` : ''}
+                {signal.velocity_toward_target
+                  ? (signal.velocity_pct_3m >= 0.1 ? ' (+5)' : ' (+2)')
+                  : (signal.velocity_pct_3m >= 0.1 ? ' (-5)' : ' (-2)')}
+              </span>
             </span>
           </div>
         )}
