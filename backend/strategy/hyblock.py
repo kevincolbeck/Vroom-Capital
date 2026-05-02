@@ -842,6 +842,7 @@ class HyblockMonitor:
         if not levels or current_price <= 0:
             return {"above_pct": None, "below_pct": None, "nearest_side": None,
                     "above_size": 0.0, "below_size": 0.0}
+        logger.debug(f"Heatmap sample item keys: {list(levels[0].keys()) if levels else 'empty'} | sample: {levels[0]}")
 
         def get_px(l: Dict) -> float:
             start = l.get("startingPrice")
