@@ -207,10 +207,10 @@ class HyblockMonitor:
         p_nls      = {"coin": COIN, "exchange": NLS_EXCHANGES, "timeframe": "1h", "limit": 5}
         # 4H compression detection (Binance is price reference)
         p_4h       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "4h", "limit": 20}
-        # Previous day levels — 1h timeframe + desc sort ensures we get the most recent bar
-        p_pd       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1h", "limit": 5, "sort": "desc"}
-        # Previous week levels — same approach
-        p_pw       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1h", "limit": 5, "sort": "desc"}
+        # Previous day levels — 1d timeframe required (1h returns empty); limit:1+desc = latest bar
+        p_pd       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1d", "limit": 1, "sort": "desc"}
+        # Previous week levels — same: 1d timeframe, limit:1+desc
+        p_pw       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1d", "limit": 1, "sort": "desc"}
 
         async with httpx.AsyncClient() as client:
             keys = [
