@@ -338,12 +338,8 @@ class BotEngine:
                         active_position_side=active_side,
                     )
 
-                    self._last_signal = signal.to_dict()
-                    await self._log_signal_tick(signal)
-                    await self._write_signal_tick(signal, current_price, fired=False)
-
+                    # Daily trade cap — run before writing to DB so block reason is captured
                     if signal.should_trade:
-                        # Daily trade cap check
                         daily_count = await self._daily_trade_count(db, signal.direction)
                         daily_max = settings.daily_max_longs if signal.direction == "LONG" else settings.daily_max_shorts
                         if daily_count >= daily_max:
@@ -351,6 +347,10 @@ class BotEngine:
                                 f"Daily {signal.direction} cap reached: {daily_count}/{daily_max} trades today — skipping")
                             signal.should_trade = False
                             signal.block_reasons.append(f"Daily {signal.direction} cap: {daily_count}/{daily_max}")
+
+                    self._last_signal = signal.to_dict()
+                    await self._log_signal_tick(signal)
+                    await self._write_signal_tick(signal, current_price, fired=False)
 
                     if signal.should_trade:
                         # Verify no position exists on exchange before priming
