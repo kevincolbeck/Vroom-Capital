@@ -170,8 +170,23 @@ class HyblockMonitor:
         p_snap_bitmex = {"coin": COIN, "exchange": "bitmex_perp_coin"}
         p_snap_bybit  = {"coin": COIN, "exchange": "bybit_perp_coin"}
         p_snap_phemex = {"coin": COIN, "exchange": "phemex_perp_stable"}
-        # Single-exchange time-series (OB, whale, retail, top traders, liq oscillators, funding — single-only APIs)
-        p_ts       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1h", "limit": 5}
+        # Time-series params — base (Binance) + confirmed multi-exchange partners
+        # bidAsk: 15/17 exchanges work; using top-5 by volume
+        # topTraderPositions: binance, binance_coin, okx, bitget, huobi confirmed
+        # whaleRetailDelta: binance, binance_coin, okx_coin confirmed
+        # liqLevelsCount: binance_perp_stable returns 422 — use coin/bitmex/phemex
+        # globalAccounts: binance, binance_coin, bybit_coin confirmed
+        p_ts        = {"coin": COIN, "exchange": "binance_perp_stable",      "timeframe": "1h", "limit": 5}
+        p_ts_bcoin  = {"coin": COIN, "exchange": "binance_perp_coin",        "timeframe": "1h", "limit": 5}
+        p_ts_bybit  = {"coin": COIN, "exchange": "bybit_perp_stable",        "timeframe": "1h", "limit": 5}
+        p_ts_okx    = {"coin": COIN, "exchange": "okx_perp_stable",          "timeframe": "1h", "limit": 5}
+        p_ts_okxc   = {"coin": COIN, "exchange": "okx_perp_coin",            "timeframe": "1h", "limit": 5}
+        p_ts_bitget = {"coin": COIN, "exchange": "bitget_perp_stable",       "timeframe": "1h", "limit": 5}
+        p_ts_hyper  = {"coin": COIN, "exchange": "hyperliquid_perp_stable",  "timeframe": "1h", "limit": 5}
+        p_ts_huobi  = {"coin": COIN, "exchange": "huobi_perp_coin",          "timeframe": "1h", "limit": 5}
+        p_ts_bitmex = {"coin": COIN, "exchange": "bitmex_perp_coin",         "timeframe": "1h", "limit": 5}
+        p_ts_phemex = {"coin": COIN, "exchange": "phemex_perp_stable",       "timeframe": "1h", "limit": 5}
+        p_ts_bbybit = {"coin": COIN, "exchange": "bybit_perp_coin",          "timeframe": "1h", "limit": 5}
         # averageLeverageUsed only works on OKX
         p_lev      = {"coin": COIN, "exchange": "okx_perp_coin", "timeframe": "1h", "limit": 5}
         # MII: cross-exchange aggregate (4 confirmed-working stable perps)
@@ -207,6 +222,18 @@ class HyblockMonitor:
                 "volume_delta_multi", "cvd_spot", "oi_multi",
                 # WarriorAI-aligned signals
                 "true_retail", "global_accts", "net_ls_delta", "prev_day", "kline_4h",
+                # bidAsk multi-exchange: upgrade OBI from Binance-only to 5-exchange average
+                "bid_ask_bybit", "bid_ask_okx", "bid_ask_bitget", "bid_ask_hyper",
+                # cumulativeLiqLevel multi-exchange: same 4 exchanges as liquidationLevels
+                "cumulative_liq_bitmex", "cumulative_liq_bybit", "cumulative_liq_phemex",
+                # topTraderPositions multi-exchange: 5 confirmed-working exchanges
+                "top_trader_pos_bcoin", "top_trader_pos_okx", "top_trader_pos_bitget", "top_trader_pos_huobi",
+                # whaleRetailDelta multi-exchange: 3 confirmed-working exchanges
+                "whale_retail_bcoin", "whale_retail_okxc",
+                # liqLevelsCount additional exchanges
+                "liq_levels_count_bitmex", "liq_levels_count_phemex",
+                # globalAccounts multi-exchange: 3 confirmed-working exchanges
+                "global_accts_bcoin", "global_accts_bbybit",
             ]
             coros = [
                 self._fetch(client, "bidAsk",                 p_ts,       unwrap_latest=True),
@@ -227,9 +254,11 @@ class HyblockMonitor:
                 self._fetch(client, "liquidationLevels",      p_snap_bitmex),
                 self._fetch(client, "liquidationLevels",      p_snap_bybit),
                 self._fetch(client, "liquidationLevels",      p_snap_phemex),
-                # Liq level size/count delta oscillators (single-only APIs)
+                # Liq level size/count delta oscillators
+                # liqLevelsSize: no exchange supports it — kept as no-op placeholder
+                # liqLevelsCount: binance_perp_stable returns 422; use coin/bitmex/phemex
                 self._fetch(client, "liqLevelsSize",          p_ts,       unwrap_latest=True),
-                self._fetch(client, "liqLevelsCount",         p_ts,       unwrap_latest=True),
+                self._fetch(client, "liqLevelsCount",         p_ts_bcoin, unwrap_latest=True),
                 # Volume ratio and buy/sell trade count ratio — multi-exchange perpetuals
                 self._fetch(client, "volumeRatio",            p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
                 self._fetch(client, "buySellTradeCountRatio", p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
@@ -245,6 +274,29 @@ class HyblockMonitor:
                 self._fetch(client, "netLongShortDelta",      p_nls,      unwrap_latest=True),   # multi-exchange
                 self._fetch(client, "pdLevels",               p_ts,       unwrap_latest=True),
                 self._fetch(client, "klines",                 p_4h,       unwrap_latest=False),
+                # bidAsk multi-exchange
+                self._fetch(client, "bidAsk",                 p_ts_bybit,  unwrap_latest=True),
+                self._fetch(client, "bidAsk",                 p_ts_okx,    unwrap_latest=True),
+                self._fetch(client, "bidAsk",                 p_ts_bitget, unwrap_latest=True),
+                self._fetch(client, "bidAsk",                 p_ts_hyper,  unwrap_latest=True),
+                # cumulativeLiqLevel multi-exchange
+                self._fetch(client, "cumulativeLiqLevel",     p_snap_bitmex, unwrap_latest=True),
+                self._fetch(client, "cumulativeLiqLevel",     p_snap_bybit,  unwrap_latest=True),
+                self._fetch(client, "cumulativeLiqLevel",     p_snap_phemex, unwrap_latest=True),
+                # topTraderPositions multi-exchange
+                self._fetch(client, "topTraderPositions",     p_ts_bcoin,  unwrap_latest=True),
+                self._fetch(client, "topTraderPositions",     p_ts_okx,    unwrap_latest=True),
+                self._fetch(client, "topTraderPositions",     p_ts_bitget, unwrap_latest=True),
+                self._fetch(client, "topTraderPositions",     p_ts_huobi,  unwrap_latest=True),
+                # whaleRetailDelta multi-exchange
+                self._fetch(client, "whaleRetailDelta",       p_ts_bcoin,  unwrap_latest=True),
+                self._fetch(client, "whaleRetailDelta",       p_ts_okxc,   unwrap_latest=True),
+                # liqLevelsCount additional exchanges
+                self._fetch(client, "liqLevelsCount",         p_ts_bitmex, unwrap_latest=True),
+                self._fetch(client, "liqLevelsCount",         p_ts_phemex, unwrap_latest=True),
+                # globalAccounts multi-exchange
+                self._fetch(client, "globalAccounts",         p_ts_bcoin,  unwrap_latest=True),
+                self._fetch(client, "globalAccounts",         p_ts_bbybit, unwrap_latest=True),
             ]
             raw = dict(zip(keys, await asyncio.gather(*coros, return_exceptions=True)))
 
@@ -254,12 +306,20 @@ class HyblockMonitor:
                 logger.warning(f"Hyblock gather exception [{k}]: {raw[k]}")
                 raw[k] = {}
 
-        obi_surface = self._compute_obi_surface(raw["bid_ask"])
+        # OBI: 5-exchange average surface → more robust slope than single exchange
+        _obi_surfaces = [self._compute_obi_surface(raw[k])
+                         for k in ("bid_ask", "bid_ask_bybit", "bid_ask_okx", "bid_ask_bitget", "bid_ask_hyper")]
+        obi_surface = self._merge_obi_surfaces(_obi_surfaces)
         obi_slope = self._compute_obi_slope(obi_surface)
         fragility = self._compute_fragility(obi_surface, raw["bids_change"])
         cascade = self._compute_cascade_risk(raw, current_price)
-        whale = self._parse_whale_sentiment(raw["whale_retail"])
-        top_traders = self._parse_top_trader_sentiment(raw["top_trader_pos"])
+        # Whale: average delta across 3 exchanges
+        whale = self._merge_whale_sentiment([raw["whale_retail"], raw["whale_retail_bcoin"], raw["whale_retail_okxc"]])
+        # Top traders: average long_pct across 5 exchanges
+        top_traders = self._merge_top_trader_sentiment([
+            raw["top_trader_pos"], raw["top_trader_pos_bcoin"],
+            raw["top_trader_pos_okx"], raw["top_trader_pos_bitget"], raw["top_trader_pos_huobi"],
+        ])
         vol_delta = self._parse_volume_delta(raw["volume_delta"])
         liq_clusters = self._parse_liq_clusters(raw["liq_heatmap"], current_price)
         oi_trend = self._parse_oi_trend(raw["open_interest"])
@@ -271,13 +331,23 @@ class HyblockMonitor:
         volume_ratio = self._parse_scalar(raw["volume_ratio"], ("volumeRatio", "ratio", "value", "delta"))
         buy_sell_count = self._parse_scalar(raw["buy_sell_count"], ("buySellTradeCountRatio", "ratio", "value", "delta"))
         liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelSizeDelta", "liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
-        liq_levels_count = self._parse_scalar(raw["liq_levels_count"], ("liqLevelCountDelta", "liqLevelsCountDelta", "countDelta", "delta", "value"))
+        # liqLevelsCount: average across 3 working exchanges (binance_perp_stable returns 422)
+        _cnt_vals = [self._parse_scalar(raw[k], ("liqLevelCountDelta", "liqLevelsCountDelta", "countDelta", "delta", "value"))
+                     for k in ("liq_levels_count", "liq_levels_count_bitmex", "liq_levels_count_phemex")]
+        _cnt_nonzero = [v for v in _cnt_vals if v != 0.0]
+        liq_levels_count = sum(_cnt_nonzero) / len(_cnt_nonzero) if _cnt_nonzero else 0.0
         cvd = self._parse_cvd(raw["volume_delta_multi"])
         cvd_spot = self._parse_cvd(raw["cvd_spot"])
         oi_delta = self._parse_oi_delta(raw["oi_multi"])
-        cumulative_liq_detail = self._parse_cumulative_liq_detail(raw["cumulative_liq"])
+        # cumulativeLiqLevel: sum long/short sizes across 4 exchanges for accurate bias
+        cumulative_liq_detail = self._merge_cumulative_liq([
+            raw["cumulative_liq"], raw["cumulative_liq_bitmex"],
+            raw["cumulative_liq_bybit"], raw["cumulative_liq_phemex"],
+        ])
         true_retail = self._parse_retail_ratio(raw["true_retail"])
-        global_accts = self._parse_retail_ratio(raw["global_accts"])
+        # globalAccounts: average long/short pct across 3 exchanges
+        _ga_sources = [raw["global_accts"], raw["global_accts_bcoin"], raw["global_accts_bbybit"]]
+        global_accts = self._merge_retail_ratio(_ga_sources)
         net_ls_delta = self._parse_net_ls_delta(raw["net_ls_delta"])
         prev_day = self._parse_prev_day_structure(raw["prev_day"], current_price)
         compression = self._parse_4h_compression(raw["kline_4h"])
@@ -834,6 +904,96 @@ class HyblockMonitor:
         return round(score, 1), description, warnings, should_block
 
     # ─── Derived metric helpers ───────────────────────────────────────────────
+
+    def _merge_obi_surfaces(self, surfaces: List[Dict]) -> Dict:
+        """Average OBI surfaces across multiple exchanges for cross-exchange consensus."""
+        valid = [s for s in surfaces if s]
+        if not valid:
+            return {}
+        totals: Dict = {}
+        counts: Dict = {}
+        for s in valid:
+            for depth, val in s.items():
+                totals[depth] = totals.get(depth, 0.0) + val
+                counts[depth] = counts.get(depth, 0) + 1
+        return {d: totals[d] / counts[d] for d in totals}
+
+    def _merge_cumulative_liq(self, sources: List[Dict]) -> Dict:
+        """Sum long/short cumulative liquidation sizes across exchanges, then compute bias."""
+        total_long  = sum(float(s.get("totalLongLiquidationSize",  0) or 0) for s in sources if s)
+        total_short = sum(float(s.get("totalShortLiquidationSize", 0) or 0) for s in sources if s)
+        return self._parse_cumulative_liq_detail({
+            "totalLongLiquidationSize":  total_long,
+            "totalShortLiquidationSize": total_short,
+        })
+
+    def _merge_whale_sentiment(self, sources: List[Dict]) -> str:
+        """Average whale delta across exchanges, then apply threshold."""
+        deltas = []
+        for d in sources:
+            if not d:
+                continue
+            v = d.get("whaleRetailDelta", d.get("whale_delta", d.get("whaleDelta", d.get("delta"))))
+            if v is not None:
+                try:
+                    deltas.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+        if not deltas:
+            return "NEUTRAL"
+        avg = sum(deltas) / len(deltas)
+        if avg > 0.1:
+            return "BULLISH"
+        if avg < -0.1:
+            return "BEARISH"
+        return "NEUTRAL"
+
+    def _merge_top_trader_sentiment(self, sources: List[Dict]) -> str:
+        """Average top trader long_pct across exchanges, then apply threshold."""
+        long_pcts = []
+        for d in sources:
+            if not d:
+                continue
+            lp = d.get("longPct", d.get("long_pct", d.get("longAccount")))
+            if lp is not None:
+                try:
+                    long_pcts.append(float(lp))
+                except (TypeError, ValueError):
+                    pass
+        if not long_pcts:
+            return "NEUTRAL"
+        avg = sum(long_pcts) / len(long_pcts)
+        if avg > 60.0:
+            return "BULLISH"
+        if avg < 40.0:
+            return "BEARISH"
+        return "NEUTRAL"
+
+    def _merge_retail_ratio(self, sources: List[Dict]) -> Dict:
+        """Average long/short pct across multiple exchange sources."""
+        long_pcts  = []
+        short_pcts = []
+        for d in sources:
+            if not d:
+                continue
+            lp = d.get("longPct",  d.get("long_pct",  d.get("longAccount")))
+            sp = d.get("shortPct", d.get("short_pct", d.get("shortAccount")))
+            if lp is not None:
+                try:
+                    long_pcts.append(float(lp))
+                except (TypeError, ValueError):
+                    pass
+            if sp is not None:
+                try:
+                    short_pcts.append(float(sp))
+                except (TypeError, ValueError):
+                    pass
+        if not long_pcts:
+            return self._parse_retail_ratio({})
+        return {
+            "long_pct":  round(sum(long_pcts)  / len(long_pcts),  2),
+            "short_pct": round(sum(short_pcts) / len(short_pcts), 2) if short_pcts else round(100 - sum(long_pcts) / len(long_pcts), 2),
+        }
 
     def _compute_obi_surface(self, bid_ask_data: Dict) -> Dict:
         """
