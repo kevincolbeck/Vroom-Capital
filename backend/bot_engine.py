@@ -343,6 +343,16 @@ class BotEngine:
                     await self._write_signal_tick(signal, current_price, fired=False)
 
                     if signal.should_trade:
+                        # Daily trade cap check
+                        daily_count = await self._daily_trade_count(db, signal.direction)
+                        daily_max = settings.daily_max_longs if signal.direction == "LONG" else settings.daily_max_shorts
+                        if daily_count >= daily_max:
+                            await self._log("WARNING", "RISK",
+                                f"Daily {signal.direction} cap reached: {daily_count}/{daily_max} trades today — skipping")
+                            signal.should_trade = False
+                            signal.block_reasons.append(f"Daily {signal.direction} cap: {daily_count}/{daily_max}")
+
+                    if signal.should_trade:
                         # Verify no position exists on exchange before priming
                         try:
                             ex_pos = await client.get_open_positions()
@@ -709,6 +719,18 @@ class BotEngine:
             await db.commit()
         except Exception as e:
             logger.warning(f"Could not save zone state to DB: {e}")
+
+    async def _daily_trade_count(self, db, direction: str) -> int:
+        """Count positions opened today (UTC) in the given direction."""
+        from sqlalchemy import func
+        today_utc = datetime.utcnow().date()
+        result = await db.execute(
+            select(func.count()).select_from(Position).where(
+                Position.side == direction,
+                func.date(Position.opened_at) == today_utc,
+            )
+        )
+        return result.scalar() or 0
 
     def get_status(self) -> Dict:
         return {

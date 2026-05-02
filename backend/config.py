@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     velocity_threshold_pct: float = Field(default=1.5)
     velocity_window_hours: int = Field(default=2)
     zone_size_usd: float = Field(default=1000.0)
-    zone_cooldown_minutes: int = Field(default=30)
+    zone_cooldown_minutes: int = Field(default=120)
+    daily_max_longs: int = Field(default=3)
+    daily_max_shorts: int = Field(default=3)
     emergency_candles: int = Field(default=4)
 
     # Liq cluster scalping entry gates
