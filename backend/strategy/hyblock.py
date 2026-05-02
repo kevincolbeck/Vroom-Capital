@@ -164,9 +164,12 @@ class HyblockMonitor:
             return {"available": False, "reason": "No Hyblock API key configured"}
 
         # Single-exchange snapshots (liq levels, cumulative liq — single-only APIs)
-        p_snap     = {"coin": COIN, "exchange": "binance_perp_stable"}
-        p_snap_bybit = {"coin": COIN, "exchange": "bybit_perp_stable"}
-        p_snap_okx   = {"coin": COIN, "exchange": "okx_perp_stable"}
+        # liquidationLevels confirmed working (via /catalog test): binance_perp_stable,
+        # bitmex_perp_coin, bybit_perp_coin, phemex_perp_stable. All others return 422.
+        p_snap        = {"coin": COIN, "exchange": "binance_perp_stable"}
+        p_snap_bitmex = {"coin": COIN, "exchange": "bitmex_perp_coin"}
+        p_snap_bybit  = {"coin": COIN, "exchange": "bybit_perp_coin"}
+        p_snap_phemex = {"coin": COIN, "exchange": "phemex_perp_stable"}
         # Single-exchange time-series (OB, whale, retail, top traders, liq oscillators, funding — single-only APIs)
         p_ts       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1h", "limit": 5}
         # averageLeverageUsed only works on OKX
@@ -196,8 +199,8 @@ class HyblockMonitor:
                 "liq_heatmap", "cumulative_liq", "open_interest",
                 "avg_leverage", "top_trader_pos", "top_trader_acc",
                 "whale_retail", "volume_delta", "funding", "market_imbalance",
-                # Precision scalping signals — liq levels from 3 exchanges
-                "liq_levels", "liq_levels_bybit", "liq_levels_okx",
+                # Precision scalping signals — liq levels from 4 confirmed exchanges
+                "liq_levels", "liq_levels_bitmex", "liq_levels_bybit", "liq_levels_phemex",
                 "liq_levels_size", "liq_levels_count",
                 "volume_ratio", "buy_sell_count",
                 # CVD and OI multi-bar (full response, not unwrapped)
@@ -219,10 +222,11 @@ class HyblockMonitor:
                 self._fetch(client, "volumeDelta",            p_flow,     unwrap_latest=True),   # multi-exchange perpetuals
                 self._fetch(client, "fundingRate",            p_ts,       unwrap_latest=True),
                 self._fetch(client, "marketImbalanceIndex",   p_mii,      unwrap_latest=False),
-                # Exact per-price liquidation levels — Binance, Bybit, OKX (single-only APIs)
+                # Exact per-price liquidation levels — 4 confirmed-working exchanges (single-only APIs)
                 self._fetch(client, "liquidationLevels",      p_snap),
+                self._fetch(client, "liquidationLevels",      p_snap_bitmex),
                 self._fetch(client, "liquidationLevels",      p_snap_bybit),
-                self._fetch(client, "liquidationLevels",      p_snap_okx),
+                self._fetch(client, "liquidationLevels",      p_snap_phemex),
                 # Liq level size/count delta oscillators (single-only APIs)
                 self._fetch(client, "liqLevelsSize",          p_ts,       unwrap_latest=True),
                 self._fetch(client, "liqLevelsCount",         p_ts,       unwrap_latest=True),
@@ -259,10 +263,11 @@ class HyblockMonitor:
         vol_delta = self._parse_volume_delta(raw["volume_delta"])
         liq_clusters = self._parse_liq_clusters(raw["liq_heatmap"], current_price)
         oi_trend = self._parse_oi_trend(raw["open_interest"])
-        _liq_lvl_binance = self._parse_liq_levels(raw["liq_levels"],       current_price)
-        _liq_lvl_bybit   = self._parse_liq_levels(raw["liq_levels_bybit"], current_price)
-        _liq_lvl_okx     = self._parse_liq_levels(raw["liq_levels_okx"],   current_price)
-        liq_levels = self._merge_liq_levels([_liq_lvl_binance, _liq_lvl_bybit, _liq_lvl_okx])
+        _liq_lvl_binance = self._parse_liq_levels(raw["liq_levels"],         current_price)
+        _liq_lvl_bitmex  = self._parse_liq_levels(raw["liq_levels_bitmex"], current_price)
+        _liq_lvl_bybit   = self._parse_liq_levels(raw["liq_levels_bybit"],  current_price)
+        _liq_lvl_phemex  = self._parse_liq_levels(raw["liq_levels_phemex"], current_price)
+        liq_levels = self._merge_liq_levels([_liq_lvl_binance, _liq_lvl_bitmex, _liq_lvl_bybit, _liq_lvl_phemex])
         volume_ratio = self._parse_scalar(raw["volume_ratio"], ("volumeRatio", "ratio", "value", "delta"))
         buy_sell_count = self._parse_scalar(raw["buy_sell_count"], ("buySellTradeCountRatio", "ratio", "value", "delta"))
         liq_levels_size = self._parse_scalar(raw["liq_levels_size"], ("liqLevelSizeDelta", "liqLevelsSizeDelta", "sizeDelta", "delta", "value"))
