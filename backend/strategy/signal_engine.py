@@ -17,6 +17,7 @@ from backend.strategy.macro_calendar import MacroCalendar
 from backend.strategy.liquidation_monitor import LiquidationMonitor
 from backend.strategy.order_flow import SpotOrderFlowMonitor
 from backend.strategy.hyblock import HyblockMonitor
+from backend.strategy.liquidation_stream import LiquidationStreamMonitor
 from backend.config import settings
 
 
@@ -138,7 +139,7 @@ class SignalEngine:
     Runs all strategy filters and produces a consolidated trade signal.
     """
 
-    def __init__(self):
+    def __init__(self, liq_stream_monitor: Optional["LiquidationStreamMonitor"] = None):
         self.zone_tracker = ZoneTracker(
             zone_size=settings.zone_size_usd,
             cooldown_minutes=settings.zone_cooldown_minutes,
@@ -148,6 +149,7 @@ class SignalEngine:
         self.liquidation_monitor = LiquidationMonitor()
         self.order_flow_monitor = SpotOrderFlowMonitor()
         self.hyblock_monitor = HyblockMonitor()
+        self.liq_stream_monitor: Optional[LiquidationStreamMonitor] = liq_stream_monitor
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
 
@@ -853,6 +855,19 @@ class SignalEngine:
         # ── Hyblock signals (MII, whale, OBI, CVD, OI, retail, PDL, liq bias) ─
         score += hyblock_score_delta
         _breakdown.append(f"hyblock({hyblock_score_delta:+.1f})")
+
+        # ── Live liquidation cascade confirmation ─────────────────────────────
+        if self.liq_stream_monitor is not None:
+            _liq_state = self.liq_stream_monitor.get_live_state()
+            if _liq_state["cascade_live"]:
+                _casc_live_dir = _liq_state["cascade_direction"]
+                if _casc_live_dir and _casc_live_dir == candidate_direction:
+                    _live_pts = 15.0 + (5.0 if _liq_state["accelerating"] else 0.0)
+                    score += _live_pts
+                    _breakdown.append(f"live_cascade={_casc_live_dir}({_live_pts:+.0f})")
+                elif _casc_live_dir:
+                    score -= 15.0
+                    _breakdown.append(f"live_cascade={_casc_live_dir}/opp(-15)")
 
         score = min(100.0, max(0.0, score))
         signal.confidence_score = score

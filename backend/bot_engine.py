@@ -11,6 +11,7 @@ from loguru import logger
 from backend.database import AsyncSessionLocal, BotState, BotStatus, Position, PositionStatus, BotLog, ZoneMemory
 from backend.exchange.bitunix import get_bitunix_client
 from backend.strategy.signal_engine import SignalEngine, TradeSignal
+from backend.strategy.liquidation_stream import LiquidationStreamMonitor
 from backend.trading.position_manager import PositionManager
 from backend.copy_trading.manager import CopyTradingManager
 from backend.config import settings
@@ -24,7 +25,8 @@ class BotEngine:
     PRICE_POLL_SECONDS    = 0.1     # Trailing stop check (ticker only) — 10x/s (Bitunix limit)
 
     def __init__(self):
-        self.signal_engine = SignalEngine()
+        self.liq_stream_monitor = LiquidationStreamMonitor()
+        self.signal_engine = SignalEngine(liq_stream_monitor=self.liq_stream_monitor)
         self._running = False
         self._paused = False
         self._task: Optional[asyncio.Task] = None
@@ -45,6 +47,7 @@ class BotEngine:
             return
         self._running = True
         self._paused = False
+        self.liq_stream_monitor.start()
         await self._load_zone_state()
         await self._restore_liq_target()
         self._task = asyncio.create_task(self._main_loop())
@@ -61,6 +64,7 @@ class BotEngine:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self.liq_stream_monitor.stop()
         await self._set_status(BotStatus.STOPPED)
         await self._log("INFO", "BOT", "Bot engine stopped")
         logger.info("Bot engine stopped")
@@ -565,7 +569,7 @@ class BotEngine:
             return
 
         mii   = (signal.hyblock_analysis or {}).get("market_imbalance_index", 0.0)
-        obi   = (signal.hyblock_analysis or {}).get("obi_direction", "NEUTRAL")
+        obi   = (signal.hyblock_analysis or {}).get("obi_slope_direction", "NEUTRAL")
         fund  = (signal.funding_analysis  or {}).get("overall_sentiment", "NEUTRAL")
         liq_str = f"${signal.liq_target_price:,.0f}" if signal.liq_target_price else "none"
         ha_str  = f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
