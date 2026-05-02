@@ -161,7 +161,7 @@ class PositionManager:
         _funding = signal_data.get("funding") or {}
         _f_rate  = _funding.get("average_rate", 0.0)
         _f_sent  = _funding.get("overall_sentiment", "NEUTRAL")
-        _obi     = (signal_data.get("hyblock") or {}).get("obi_direction", "NEUTRAL")
+        _obi     = (signal_data.get("hyblock") or {}).get("obi_slope_direction", "NEUTRAL")
         await self._log(
             "INFO", "POSITION",
             f"Opened {direction} @ ${fill_price:,.2f} | "
