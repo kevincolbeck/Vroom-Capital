@@ -258,6 +258,148 @@ class SignalTick(Base):
     cvd_spot: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     basis_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
+    # Walk-forward data collection — block stage, mode, score breakdown
+    block_stage: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    mode: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    score_breakdown: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
+
+    # Regime
+    regime: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    regime_er: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    regime_vol_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Order book (from ob_state)
+    ob_bid_wall_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_bid_wall_size_btc: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_ask_wall_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_ask_wall_size_btc: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_book_imbalance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_blocking_wall_size_btc: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Trade flow (from trade_flow_state)
+    tf_taker_buy_ratio_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_taker_buy_ratio_15m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_buy_volume_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_sell_volume_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Live liquidation stream (from live_liq_state)
+    live_cascade_live: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    live_cascade_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    live_hawkes_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    live_liq_rate_btc_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Funding trajectory
+    funding_trajectory: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    funding_slope_per_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # 24h range distances
+    dist_from_24h_high_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    dist_from_24h_low_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # 6h HA price levels (already on signal)
+    ha_6h_high: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ha_6h_low: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ha_prev_6h_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+
+
+class SignalOutcome(Base):
+    """Price outcomes for signal ticks — filled lazily as time horizons elapse."""
+    __tablename__ = "signal_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_tick_id: Mapped[int] = mapped_column(Integer, ForeignKey("signal_ticks.id"), unique=True, index=True)
+    entry_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    direction: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+
+    # Price at each horizon
+    price_15m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price_1h: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price_4h: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price_8h: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    price_24h: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Return pct (positive = price went up)
+    return_15m_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    return_1h_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    return_4h_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    return_8h_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    return_24h_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Was direction correct?
+    correct_15m: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    correct_1h: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    correct_4h: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    correct_8h: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    correct_24h: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # When each horizon was filled
+    ts_filled_15m: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ts_filled_1h: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ts_filled_4h: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ts_filled_8h: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ts_filled_24h: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class MarketSnapshot(Base):
+    """Full market state snapshot written every 60s for walk-forward backtesting."""
+    __tablename__ = "market_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    price: Mapped[float] = mapped_column(Float)
+
+    # HA state
+    ha_1h_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    ha_6h_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    ha_3m_color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    ha_1h_aligned_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ha_6h_body_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Regime
+    regime: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    regime_er: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    regime_vol_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Trade flow (from TradeFlowMonitor.get_live_state())
+    tf_taker_buy_ratio_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_taker_buy_ratio_15m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_buy_volume_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_sell_volume_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_total_volume_5m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tf_connected: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # Order book (from OrderBookMonitor.get_live_state())
+    ob_bid_wall_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_bid_wall_size_btc: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_bid_wall_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_ask_wall_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_ask_wall_size_btc: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_ask_wall_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_book_imbalance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ob_synced: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # Liquidation stream (from LiquidationStreamMonitor.get_live_state())
+    liq_cascade_live: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    liq_cascade_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    liq_rate_btc_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_long_btc_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_short_btc_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_hawkes_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    liq_accelerating: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    liq_connected: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # Funding
+    funding_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    funding_sentiment: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    funding_trajectory: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    funding_slope_per_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Hyblock key metrics
+    mii: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    obi_direction: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    cascade_risk: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    whale_sentiment: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -315,6 +457,34 @@ async def init_db():
             # Spot/futures divergence
             ("cvd_spot", "REAL"),
             ("basis_pct", "REAL"),
+            # Walk-forward data collection
+            ("block_stage", "TEXT"),
+            ("mode", "TEXT"),
+            ("score_breakdown", "TEXT"),
+            ("regime", "TEXT"),
+            ("regime_er", "REAL"),
+            ("regime_vol_ratio", "REAL"),
+            ("ob_bid_wall_pct", "REAL"),
+            ("ob_bid_wall_size_btc", "REAL"),
+            ("ob_ask_wall_pct", "REAL"),
+            ("ob_ask_wall_size_btc", "REAL"),
+            ("ob_book_imbalance", "REAL"),
+            ("ob_blocking_wall_size_btc", "REAL"),
+            ("tf_taker_buy_ratio_5m", "REAL"),
+            ("tf_taker_buy_ratio_15m", "REAL"),
+            ("tf_buy_volume_5m", "REAL"),
+            ("tf_sell_volume_5m", "REAL"),
+            ("live_cascade_live", "INTEGER"),
+            ("live_cascade_direction", "TEXT"),
+            ("live_hawkes_intensity", "REAL"),
+            ("live_liq_rate_btc_min", "REAL"),
+            ("funding_trajectory", "TEXT"),
+            ("funding_slope_per_min", "REAL"),
+            ("dist_from_24h_high_pct", "REAL"),
+            ("dist_from_24h_low_pct", "REAL"),
+            ("ha_6h_high", "REAL"),
+            ("ha_6h_low", "REAL"),
+            ("ha_prev_6h_color", "TEXT"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:

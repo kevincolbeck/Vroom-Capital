@@ -43,6 +43,7 @@ class BotEngine:
         self._manual_override: bool = False
         self._last_reconcile_ts: float = 0.0
         self._liq_target: Optional[float] = None  # liq cluster TP price for open position
+        self._outcome_task: Optional[asyncio.Task] = None
 
     # ─────────────────────────────────────────────────────────────────
     # Lifecycle
@@ -61,6 +62,7 @@ class BotEngine:
         await self._load_zone_state()
         await self._restore_liq_target()
         self._task = asyncio.create_task(self._main_loop())
+        self._outcome_task = asyncio.create_task(self._outcome_recorder_loop(), name="outcome_recorder")
         await self._set_status(BotStatus.RUNNING)
         await self._log("INFO", "BOT", "Bot engine started")
         logger.info("Bot engine started")
@@ -68,6 +70,8 @@ class BotEngine:
     async def stop(self):
         """Stop the bot engine gracefully."""
         self._running = False
+        if self._outcome_task:
+            self._outcome_task.cancel()
         if self._task:
             self._task.cancel()
             try:
@@ -367,6 +371,7 @@ class BotEngine:
                     self._last_signal = signal.to_dict()
                     await self._log_signal_tick(signal)
                     await self._write_signal_tick(signal, current_price, fired=False)
+                    asyncio.create_task(self._write_market_snapshot(current_price, signal))
 
                     if signal.should_trade:
                         # Verify no position exists on exchange before priming
@@ -424,6 +429,8 @@ class BotEngine:
                         active_position_side=fresh_open[0].side if fresh_open else None,
                     )
                     self._last_signal = signal.to_dict()
+                    await self._write_signal_tick(signal, current_price, fired=False)
+                    asyncio.create_task(self._write_market_snapshot(current_price, signal))
 
     # ─────────────────────────────────────────────────────────────────
     # Override Controls
@@ -608,7 +615,7 @@ class BotEngine:
         Persist the full signal state to signal_ticks for future backtesting / ML training.
         Only called when direction is not None so neutral ticks are excluded.
         """
-        if signal.direction is None:
+        if not signal.direction:
             return
         import json as _json
         from backend.database import SignalTick
@@ -693,6 +700,41 @@ class BotEngine:
             # Spot/futures divergence
             cvd_spot=hyblock.get("cvd_spot"),
             basis_pct=(signal.spot_flow_analysis or {}).get("basis_pct"),
+            # Walk-forward: block stage, mode, score breakdown
+            block_stage=signal.block_stage,
+            mode=signal.mode,
+            score_breakdown=_json.dumps(signal.score_breakdown) if signal.score_breakdown else None,
+            # Regime
+            regime=signal.regime,
+            regime_er=signal.regime_er,
+            regime_vol_ratio=signal.regime_vol_ratio,
+            # Order book
+            ob_bid_wall_pct=(signal.ob_state or {}).get("bid_wall_pct"),
+            ob_bid_wall_size_btc=(signal.ob_state or {}).get("bid_wall_size_btc"),
+            ob_ask_wall_pct=(signal.ob_state or {}).get("ask_wall_pct"),
+            ob_ask_wall_size_btc=(signal.ob_state or {}).get("ask_wall_size_btc"),
+            ob_book_imbalance=(signal.ob_state or {}).get("book_imbalance"),
+            ob_blocking_wall_size_btc=(signal.ob_state or {}).get("blocking_wall_size_btc"),
+            # Trade flow
+            tf_taker_buy_ratio_5m=(signal.trade_flow_state or {}).get("taker_buy_ratio_5m"),
+            tf_taker_buy_ratio_15m=(signal.trade_flow_state or {}).get("taker_buy_ratio_15m"),
+            tf_buy_volume_5m=(signal.trade_flow_state or {}).get("buy_volume_5m"),
+            tf_sell_volume_5m=(signal.trade_flow_state or {}).get("sell_volume_5m"),
+            # Live liq stream
+            live_cascade_live=(signal.live_liq_state or {}).get("cascade_live"),
+            live_cascade_direction=(signal.live_liq_state or {}).get("cascade_direction"),
+            live_hawkes_intensity=(signal.live_liq_state or {}).get("hawkes_intensity"),
+            live_liq_rate_btc_min=(signal.live_liq_state or {}).get("liq_rate_btc_min"),
+            # Funding trajectory
+            funding_trajectory=(signal.funding_trajectory_data or {}).get("trajectory"),
+            funding_slope_per_min=(signal.funding_trajectory_data or {}).get("slope_per_min"),
+            # 24h range
+            dist_from_24h_high_pct=signal.dist_from_24h_high_pct,
+            dist_from_24h_low_pct=signal.dist_from_24h_low_pct,
+            # 6h HA levels
+            ha_6h_high=signal.ha_6h_high,
+            ha_6h_low=signal.ha_6h_low,
+            ha_prev_6h_color=signal.ha_prev_6h_color,
         )
         try:
             async with AsyncSessionLocal() as db:
@@ -700,6 +742,139 @@ class BotEngine:
                 await db.commit()
         except Exception as e:
             logger.warning(f"SignalTick write failed: {e}")
+
+    async def _write_market_snapshot(self, price: float, signal: "TradeSignal"):
+        """Write a full market state snapshot row every tick for walk-forward backtesting."""
+        from backend.database import MarketSnapshot
+        tf   = signal.trade_flow_state or {}
+        ob   = signal.ob_state or {}
+        liq  = signal.live_liq_state or {}
+        hb   = signal.hyblock_analysis or {}
+        fn   = signal.funding_trajectory_data or {}
+        fund = signal.funding_analysis or {}
+        snap = MarketSnapshot(
+            ts=datetime.utcnow(),
+            price=price,
+            ha_1h_color=signal.ha_1h_color,
+            ha_6h_color=signal.ha_6h_color,
+            ha_3m_color=signal.ha_3m_color,
+            ha_1h_aligned_count=signal.ha_1h_aligned_count,
+            ha_6h_body_pct=signal.ha_6h_body_pct,
+            regime=signal.regime,
+            regime_er=signal.regime_er,
+            regime_vol_ratio=signal.regime_vol_ratio,
+            tf_taker_buy_ratio_5m=tf.get("taker_buy_ratio_5m"),
+            tf_taker_buy_ratio_15m=tf.get("taker_buy_ratio_15m"),
+            tf_buy_volume_5m=tf.get("buy_volume_5m"),
+            tf_sell_volume_5m=tf.get("sell_volume_5m"),
+            tf_total_volume_5m=tf.get("total_volume_5m"),
+            tf_connected=tf.get("connected"),
+            ob_bid_wall_price=ob.get("bid_wall_price"),
+            ob_bid_wall_size_btc=ob.get("bid_wall_size_btc"),
+            ob_bid_wall_pct=ob.get("bid_wall_pct"),
+            ob_ask_wall_price=ob.get("ask_wall_price"),
+            ob_ask_wall_size_btc=ob.get("ask_wall_size_btc"),
+            ob_ask_wall_pct=ob.get("ask_wall_pct"),
+            ob_book_imbalance=ob.get("book_imbalance"),
+            ob_synced=ob.get("synced"),
+            liq_cascade_live=liq.get("cascade_live"),
+            liq_cascade_direction=liq.get("cascade_direction"),
+            liq_rate_btc_min=liq.get("liq_rate_btc_min"),
+            liq_long_btc_min=liq.get("long_liq_btc_min"),
+            liq_short_btc_min=liq.get("short_liq_btc_min"),
+            liq_hawkes_intensity=liq.get("hawkes_intensity"),
+            liq_accelerating=liq.get("accelerating"),
+            liq_connected=liq.get("connected"),
+            funding_rate=fund.get("average_rate"),
+            funding_sentiment=fund.get("overall_sentiment"),
+            funding_trajectory=fn.get("trajectory"),
+            funding_slope_per_min=fn.get("slope_per_min"),
+            mii=hb.get("market_imbalance_index"),
+            obi_direction=hb.get("obi_slope_direction"),
+            cascade_risk=hb.get("cascade_risk"),
+            whale_sentiment=hb.get("whale_sentiment"),
+        )
+        try:
+            async with AsyncSessionLocal() as db:
+                db.add(snap)
+                await db.commit()
+        except Exception as e:
+            logger.debug(f"MarketSnapshot write failed: {e}")
+
+    async def _outcome_recorder_loop(self):
+        """Background task: fills price outcomes for past signal ticks every 2 minutes."""
+        while self._running:
+            try:
+                await asyncio.sleep(120)
+                if not self._running:
+                    break
+                await self._fill_pending_outcomes()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Outcome recorder error: {e}")
+
+    async def _fill_pending_outcomes(self):
+        """Check signal ticks from last 25h; fill price outcomes for elapsed horizons."""
+        from backend.database import SignalOutcome, SignalTick
+        from datetime import timedelta
+        from sqlalchemy import select as _select
+
+        client = get_bitunix_client()
+        try:
+            ticker = await client.get_ticker()
+            current_price = ticker["price"]
+        except Exception:
+            return
+
+        now = datetime.utcnow()
+        HORIZONS = [
+            (15,       "price_15m", "return_15m_pct", "correct_15m", "ts_filled_15m"),
+            (60,       "price_1h",  "return_1h_pct",  "correct_1h",  "ts_filled_1h"),
+            (240,      "price_4h",  "return_4h_pct",  "correct_4h",  "ts_filled_4h"),
+            (480,      "price_8h",  "return_8h_pct",  "correct_8h",  "ts_filled_8h"),
+            (24 * 60,  "price_24h", "return_24h_pct", "correct_24h", "ts_filled_24h"),
+        ]
+
+        try:
+            async with AsyncSessionLocal() as db:
+                cutoff = now - timedelta(hours=25)
+                result = await db.execute(
+                    _select(SignalTick)
+                    .where(SignalTick.ts >= cutoff)
+                    .where(SignalTick.direction != None)
+                )
+                ticks = result.scalars().all()
+
+                for tick in ticks:
+                    out_result = await db.execute(
+                        _select(SignalOutcome).where(SignalOutcome.signal_tick_id == tick.id)
+                    )
+                    outcome = out_result.scalar_one_or_none()
+                    if outcome is None:
+                        outcome = SignalOutcome(
+                            signal_tick_id=tick.id,
+                            entry_price=tick.price,
+                            direction=tick.direction,
+                        )
+                        db.add(outcome)
+
+                    minutes_elapsed = (now - tick.ts).total_seconds() / 60.0
+                    for minutes, p_col, r_col, c_col, t_col in HORIZONS:
+                        if minutes_elapsed >= minutes and getattr(outcome, p_col) is None:
+                            setattr(outcome, p_col, current_price)
+                            ret = (current_price - tick.price) / tick.price * 100 if tick.price else 0.0
+                            setattr(outcome, r_col, round(ret, 4))
+                            correct = (
+                                (tick.direction == "LONG"  and ret > 0) or
+                                (tick.direction == "SHORT" and ret < 0)
+                            )
+                            setattr(outcome, c_col, correct)
+                            setattr(outcome, t_col, now)
+
+                await db.commit()
+        except Exception as e:
+            logger.debug(f"_fill_pending_outcomes error: {e}")
 
     async def _load_zone_state(self):
         """Restore zone cooldowns from DB into the in-memory zone tracker on startup."""

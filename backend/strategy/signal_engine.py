@@ -95,6 +95,15 @@ class TradeSignal:
         # Layer 5: aggTrade taker flow snapshot
         self.trade_flow_state: Dict = {}
 
+        # Walk-forward data collection
+        self.block_stage: str = ""          # which gate blocked this signal
+        self.mode: str = "HA_TREND"         # HA_TREND or WICK_FADE
+        self.score_breakdown: List[str] = []  # full scoring breakdown
+        self.dist_from_24h_high_pct: float = 0.0
+        self.dist_from_24h_low_pct: float = 0.0
+        self.live_liq_state: Dict = {}      # LiquidationStreamMonitor.get_live_state() snapshot
+        self.funding_trajectory_data: Dict = {}  # get_trajectory() result
+
         self.generated_at: datetime = datetime.utcnow()
 
     def to_dict(self) -> Dict:
@@ -148,6 +157,14 @@ class TradeSignal:
             "regime_vol_ratio": round(self.regime_vol_ratio, 3),
             "trade_flow":       self.trade_flow_state,
             "generated_at": self.generated_at.isoformat(),
+            # Walk-forward data collection
+            "block_stage": self.block_stage,
+            "mode": self.mode,
+            "score_breakdown": self.score_breakdown,
+            "dist_from_24h_high_pct": round(self.dist_from_24h_high_pct, 4),
+            "dist_from_24h_low_pct": round(self.dist_from_24h_low_pct, 4),
+            "live_liq_state": self.live_liq_state,
+            "funding_trajectory": self.funding_trajectory_data,
         }
 
 
@@ -256,6 +273,7 @@ class SignalEngine:
 
         if not candles_1h or not candles_6h:
             signal.block_reasons.append("Insufficient candle data")
+            signal.block_stage = "NO_DATA"
             return signal
 
         # ─── Step 1: Compute Heikin Ashi ──────────────────────────────────
@@ -345,6 +363,7 @@ class SignalEngine:
             )
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
+            signal.block_stage = "ZONE_COOLDOWN"
             return signal
 
         # ─── Step 4: Second-break (dwarf) rule ─────────────────────────────
@@ -359,6 +378,7 @@ class SignalEngine:
                     )
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
+                    signal.block_stage = "DWARF"
                     return signal
 
         self._prev_price = current_price
@@ -379,6 +399,7 @@ class SignalEngine:
             signal.block_reasons.append(vel_reason)
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
+            signal.block_stage = "VELOCITY"
             return signal
 
         # Kick off remaining I/O-bound tasks (hyblock_task already running since Step 2)
@@ -417,6 +438,7 @@ class SignalEngine:
             signal.block_reasons.append(f"Macro block: {macro_context.get('block_description', macro_context['fomc_description'])}")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
+            signal.block_stage = "MACRO"
             return signal
 
         # ─── Step 8.5: Liquidation positioning analysis ───────────────────
@@ -491,6 +513,7 @@ class SignalEngine:
                 )
                 signal.direction = candidate_direction
                 signal.strength = "BLOCKED"
+                signal.block_stage = "HYBLOCK_BLOCK"
                 return signal
         else:
             logger.info(
@@ -552,6 +575,9 @@ class SignalEngine:
             )
 
         signal.wick_fade_mode = _wick_fade_mode
+        signal.mode = "WICK_FADE" if _wick_fade_mode else "HA_TREND"
+        signal.dist_from_24h_high_pct = _dist_from_24h_high_pct
+        signal.dist_from_24h_low_pct = _dist_from_24h_low_pct
 
         if _wick_fade_mode:
             # Re-check zone cooldown for the overridden direction
@@ -562,6 +588,7 @@ class SignalEngine:
                 )
                 signal.direction = candidate_direction
                 signal.strength = "BLOCKED"
+                signal.block_stage = "ZONE_COOLDOWN"
                 return signal
 
         # Score hyblock signals now that direction is final
@@ -583,6 +610,7 @@ class SignalEngine:
             signal.block_reasons.append("Hyblock: CRITICAL cascade risk — entry blocked")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
+            signal.block_stage = "HYBLOCK_BLOCK"
             return signal
 
         # ─── Step 8.9: Fused liq cluster gate (skipped for wick fades) ─────────
@@ -612,6 +640,7 @@ class SignalEngine:
                     logger.info(f"[LONG] BLOCKED — liq cluster gate: {_detail}")
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
+                    signal.block_stage = "LIQ_GATE"
                     return signal
 
                 signal.liq_target_price = _lvl_price
@@ -635,6 +664,7 @@ class SignalEngine:
                     logger.info(f"[SHORT] BLOCKED — liq cluster gate: {_detail}")
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
+                    signal.block_stage = "LIQ_GATE"
                     return signal
 
                 signal.liq_target_price = _lvl_price
@@ -662,6 +692,7 @@ class SignalEngine:
                     )
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
+                    signal.block_stage = "HA_LEVEL_GATE"
                     return signal
             elif candidate_direction == "LONG":
                 _dist_from_low_pct = (current_price - signal.ha_6h_low) / signal.ha_6h_low * 100
@@ -676,6 +707,7 @@ class SignalEngine:
                     )
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
+                    signal.block_stage = "HA_LEVEL_GATE"
                     return signal
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
@@ -930,6 +962,7 @@ class SignalEngine:
         # RISING = funding moving positive = longs getting more overcrowded.
         # FALLING = funding moving negative = shorts getting more overcrowded.
         _traj = self.funding_monitor.get_trajectory()
+        signal.funding_trajectory_data = _traj
         _traj_dir = _traj["trajectory"]
         _traj_pts = 0.0
         if _traj_dir != "FLAT":
@@ -1168,6 +1201,7 @@ class SignalEngine:
         # ── Live liquidation cascade confirmation ─────────────────────────────
         if self.liq_stream_monitor is not None:
             _liq_state = self.liq_stream_monitor.get_live_state()
+            signal.live_liq_state = _liq_state
             if _liq_state["cascade_live"]:
                 _casc_live_dir = _liq_state["cascade_direction"]
                 if _casc_live_dir and _casc_live_dir == candidate_direction:
@@ -1247,6 +1281,8 @@ class SignalEngine:
             )
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
+            signal.block_stage = "CONFIDENCE"
+            signal.score_breakdown = list(_breakdown)
             return signal
 
         # ─── Step 11: Compute final position size modifier ────────────────
@@ -1296,6 +1332,8 @@ class SignalEngine:
             f"Size={signal.position_size_modifier:.2f}x"
         )
 
+        signal.block_stage = "NONE"
+        signal.score_breakdown = list(_breakdown)
         logger.info(f"Signal generated: {signal.direction} ({signal.strength}) — {signal.entry_reason}")
         return signal
 
