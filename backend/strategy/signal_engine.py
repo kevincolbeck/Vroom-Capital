@@ -482,53 +482,88 @@ class SignalEngine:
             signal.strength = "BLOCKED"
             return signal
 
-        # ─── Step 8.9: Liq cluster gate (skipped for wick fades) ────────────
-        # Must have a directionally correct liquidation cluster:
-        #   LONG  → SHORT cluster above price (shorts squeezed → price rises)
-        #   SHORT → LONG  cluster below price (longs liquidated → price falls)
-        # _parse_liq_levels already applies max_pct and min_btc filters,
-        # so we only need to confirm the cluster exists and meets min size.
+        # ─── Step 8.9: Fused liq cluster gate (skipped for wick fades) ─────────
+        # OR gate: passes if EITHER source has a qualifying directional cluster.
+        #   liq_clusters (liquidationHeatmap) — multi-exchange, zone-based
+        #   liq_levels   (liquidationLevels)  — single-exchange, exact per-price
+        # TP price: prefers exact level price (precision exit), falls back to
+        # heatmap midpoint. Both confirming = highest conviction entry.
         # Wick fades bypass this: the 24h extreme + Hyblock OBI is the entry signal.
         if not _wick_fade_mode:
-            _min_btc = settings.min_liq_cluster_btc
+            _min_btc    = settings.min_liq_cluster_btc
+            liq_clusters = hyblock_data.get("liq_clusters", {})
 
             if candidate_direction == "LONG":
-                _cluster_size  = _liq_levels.get("short_cluster_size", 0.0) or 0.0
-                _cluster_pct   = _liq_levels.get("short_cluster_pct")
-                _cluster_price = _liq_levels.get("short_cluster_price")
-                _ok = _cluster_pct is not None and _cluster_size >= _min_btc
-                if not _ok:
+                # Heatmap: largest cluster above price (multi-exchange)
+                _hm_size  = liq_clusters.get("above_size", 0.0) or 0.0
+                _hm_pct   = liq_clusters.get("above_pct")
+                _hm_price = liq_clusters.get("above_price")
+                _hm_ok    = _hm_pct is not None and _hm_size >= _min_btc
+                # Exact levels: SHORT cluster above price (single-exchange)
+                _lvl_size  = _liq_levels.get("short_cluster_size", 0.0) or 0.0
+                _lvl_pct   = _liq_levels.get("short_cluster_pct")
+                _lvl_price = _liq_levels.get("short_cluster_price")
+                _lvl_ok    = _lvl_pct is not None and _lvl_size >= _min_btc
+
+                if not (_hm_ok or _lvl_ok):
+                    _detail = (
+                        f"heatmap={_hm_size:.0f}BTC@{_hm_pct}% "
+                        f"levels={_lvl_size:.0f}BTC@{_lvl_pct}%"
+                    )
                     signal.block_reasons.append(
-                        f"Liq cluster gate: {_cluster_size:.0f} BTC SHORT cluster at "
-                        f"{_cluster_pct}% above — need >={_min_btc:.0f} BTC"
+                        f"Liq cluster gate: no qualifying SHORT cluster above — {_detail} (need >={_min_btc:.0f} BTC)"
                     )
-                    logger.info(
-                        f"[LONG] BLOCKED — liq cluster gate: {_cluster_size:.0f} BTC SHORT cluster "
-                        f"@ {_cluster_pct}% above (need >={_min_btc:.0f} BTC)"
-                    )
+                    logger.info(f"[LONG] BLOCKED — liq cluster gate: {_detail} (need >={_min_btc:.0f} BTC)")
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
                     return signal
-                signal.liq_target_price = _cluster_price
+
+                signal.liq_target_price = _lvl_price if _lvl_ok else _hm_price
+                _src = ("heatmap+levels" if (_hm_ok and _lvl_ok)
+                        else "levels" if _lvl_ok else "heatmap")
+                logger.info(
+                    f"[LONG] Liq gate passed [{_src}]: "
+                    f"heatmap={_hm_size:.0f}BTC@{_hm_pct}% "
+                    f"levels={_lvl_size:.0f}BTC@{_lvl_pct}% "
+                    f"TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else
+                    f"[LONG] Liq gate passed [{_src}]"
+                )
 
             elif candidate_direction == "SHORT":
-                _cluster_size  = _liq_levels.get("long_cluster_size", 0.0) or 0.0
-                _cluster_pct   = _liq_levels.get("long_cluster_pct")
-                _cluster_price = _liq_levels.get("long_cluster_price")
-                _ok = _cluster_pct is not None and _cluster_size >= _min_btc
-                if not _ok:
+                # Heatmap: largest cluster below price (multi-exchange)
+                _hm_size  = liq_clusters.get("below_size", 0.0) or 0.0
+                _hm_pct   = liq_clusters.get("below_pct")
+                _hm_price = liq_clusters.get("below_price")
+                _hm_ok    = _hm_pct is not None and _hm_size >= _min_btc
+                # Exact levels: LONG cluster below price (single-exchange)
+                _lvl_size  = _liq_levels.get("long_cluster_size", 0.0) or 0.0
+                _lvl_pct   = _liq_levels.get("long_cluster_pct")
+                _lvl_price = _liq_levels.get("long_cluster_price")
+                _lvl_ok    = _lvl_pct is not None and _lvl_size >= _min_btc
+
+                if not (_hm_ok or _lvl_ok):
+                    _detail = (
+                        f"heatmap={_hm_size:.0f}BTC@{_hm_pct}% "
+                        f"levels={_lvl_size:.0f}BTC@{_lvl_pct}%"
+                    )
                     signal.block_reasons.append(
-                        f"Liq cluster gate: {_cluster_size:.0f} BTC LONG cluster at "
-                        f"{_cluster_pct}% below — need >={_min_btc:.0f} BTC"
+                        f"Liq cluster gate: no qualifying LONG cluster below — {_detail} (need >={_min_btc:.0f} BTC)"
                     )
-                    logger.info(
-                        f"[SHORT] BLOCKED — liq cluster gate: {_cluster_size:.0f} BTC LONG cluster "
-                        f"@ {_cluster_pct}% below (need >={_min_btc:.0f} BTC)"
-                    )
+                    logger.info(f"[SHORT] BLOCKED — liq cluster gate: {_detail} (need >={_min_btc:.0f} BTC)")
                     signal.direction = candidate_direction
                     signal.strength = "BLOCKED"
                     return signal
-                signal.liq_target_price = _cluster_price
+
+                signal.liq_target_price = _lvl_price if _lvl_ok else _hm_price
+                _src = ("heatmap+levels" if (_hm_ok and _lvl_ok)
+                        else "levels" if _lvl_ok else "heatmap")
+                logger.info(
+                    f"[SHORT] Liq gate passed [{_src}]: "
+                    f"heatmap={_hm_size:.0f}BTC@{_hm_pct}% "
+                    f"levels={_lvl_size:.0f}BTC@{_lvl_pct}% "
+                    f"TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else
+                    f"[SHORT] Liq gate passed [{_src}]"
+                )
 
         # ─── Step 8.95: 6h HA price level gate (skipped for wick fades) ─────
         # WarriorAI enters only when price has returned to the completed 6h HA level
