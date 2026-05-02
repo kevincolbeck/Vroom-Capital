@@ -63,7 +63,10 @@ class SpotOrderFlowMonitor:
                 f"{self.BINANCE_URL}/api/v3/ticker/price",
                 params={"symbol": "BTCUSDT"},
             )
-            return float(resp.json()["price"])
+            resp.raise_for_status()
+            data = resp.json()
+            raw = data.get("price") if isinstance(data, dict) else None
+            return float(raw) if raw is not None else None
         except Exception as e:
             logger.debug(f"Binance spot price failed: {e}")
             return None
@@ -246,6 +249,14 @@ class SpotOrderFlowMonitor:
             # Basis = (perpetual_price - spot_price) / spot_price * 100
             # Positive = futures at premium; Negative = futures at discount
             spot_price = spot_price_result if isinstance(spot_price_result, float) else None
+            # Fallback: derive spot mid from Coinbase depth if Binance price unavailable
+            if spot_price is None:
+                for book in books:
+                    if book["exchange"] == "coinbase" and book.get("bids") and book.get("asks"):
+                        best_bid = book["bids"][0][0]
+                        best_ask = book["asks"][0][0]
+                        spot_price = (best_bid + best_ask) / 2.0
+                        break
             basis_pct = round((current_price - spot_price) / spot_price * 100, 4) if spot_price else 0.0
 
             result = {
