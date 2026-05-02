@@ -603,6 +603,36 @@ class HyblockMonitor:
             score -= 3.0
             warnings.append("MEDIUM cascade risk")
 
+        # ── Liq levels size/count delta (cascade initiation signal) ──────────
+        # liq_levels_size_delta  < 0 → liq positions shrinking (being triggered)
+        # liq_levels_count_delta < 0 → fewer distinct levels (levels being hit)
+        # Both negative + aligned = cascade is underway = highest conviction entry.
+        # Either shrinking but opposing = wrong cascade is happening = danger.
+        _lvl_sz_d  = float(data.get("liq_levels_size_delta")  or 0.0)
+        _lvl_cnt_d = float(data.get("liq_levels_count_delta") or 0.0)
+        _lv_casc_dir = data.get("liq_levels", {}).get("cascade_direction")
+        _sz_shrinking  = _lvl_sz_d  < -0.005
+        _cnt_shrinking = _lvl_cnt_d < -0.005
+        _either_shrinking = _sz_shrinking or _cnt_shrinking
+        _both_shrinking   = _sz_shrinking and _cnt_shrinking
+        _lv_aligned = _lv_casc_dir == direction
+
+        if _either_shrinking:
+            if _lv_aligned:
+                _lv_pts = 10.0 if _both_shrinking else 6.0
+                score += _lv_pts
+                _lv_state = "underway" if _both_shrinking else "starting"
+                notes.append(
+                    f"cascade {_lv_state} (sz_d={_lvl_sz_d:+.3f} cnt_d={_lvl_cnt_d:+.3f} +{_lv_pts:.0f})"
+                )
+            else:
+                score -= 5.0
+                warnings.append(
+                    f"opposite cascade active (sz_d={_lvl_sz_d:+.3f} cnt_d={_lvl_cnt_d:+.3f} -5)"
+                )
+        elif abs(_lvl_sz_d) > 0.005 or abs(_lvl_cnt_d) > 0.005:
+            notes.append(f"liq levels building (sz_d={_lvl_sz_d:+.3f} cnt_d={_lvl_cnt_d:+.3f})")
+
         # ── Cumulative liquidation zone bias ──────────────────────────────────
         # Total predicted short liq > long liq → more shorts will be forced to
         # buy back → upward cascade pressure → confirms LONG (and vice versa).
