@@ -910,7 +910,7 @@ class HyblockMonitor:
         else:
             nearest_side = None
 
-        logger.debug(f"[HM_DIAG] total_levels={len(levels)} nonzero={sum(1 for l in levels if get_size(l)>0)} sample={[{'px':round(get_px(l),0),'sz':round(get_size(l),1)} for l in levels[:5]]}")
+        logger.debug(f"[HM_DIAG] total={len(levels)} nonzero={sum(1 for l in levels if get_size(l)>0)} price={current_price:.0f} above_nz={sum(1 for l in levels if get_px(l)>current_price and get_size(l)>0)} below_nz={sum(1 for l in levels if 0<get_px(l)<current_price and get_size(l)>0)}")
         # Wide search: largest non-zero cluster anywhere in the heatmap, each direction.
         # No range cap — nearby clusters are often wiped out after a price move;
         # the meaningful zones may be 15-30%+ away. Dashboard display only.
