@@ -138,7 +138,11 @@ class HyblockMonitor:
                 return {}
             return body if isinstance(body, dict) else {}
         except httpx.HTTPStatusError as e:
-            logger.warning(f"Hyblock {endpoint}: HTTP {e.response.status_code}")
+            status = e.response.status_code
+            if status == 422:
+                logger.debug(f"Hyblock {endpoint}: HTTP 422 (exchange not supported for this endpoint)")
+            else:
+                logger.warning(f"Hyblock {endpoint}: HTTP {status}")
             return {}
         except Exception as e:
             logger.warning(f"Hyblock {endpoint} error: {e}")
