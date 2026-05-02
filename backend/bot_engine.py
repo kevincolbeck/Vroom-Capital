@@ -682,8 +682,19 @@ class BotEngine:
             net_ls_delta=hyblock.get("net_ls_delta"),
             # Cumulative liq zone bias
             cumulative_liq_bias=hyblock.get("cumulative_liq_bias"),
-            # Previous day structure
+            # Previous day structure + levels
             prev_day_structure=hyblock.get("prev_day_structure"),
+            prev_day_high=hyblock.get("prev_day_high"),
+            prev_day_low=hyblock.get("prev_day_low"),
+            prev_day_eq=hyblock.get("prev_day_eq"),
+            # Previous week structure + levels
+            prev_week_structure=hyblock.get("prev_week_structure"),
+            prev_week_high=hyblock.get("prev_week_high"),
+            prev_week_low=hyblock.get("prev_week_low"),
+            prev_week_eq=hyblock.get("prev_week_eq"),
+            # OBI raw slope + 4H compression ratio
+            obi_slope=hyblock.get("obi_slope"),
+            compression_ratio=hyblock.get("compression_ratio"),
             # Round number zone proximity (nearest $5K level distance)
             round_number_dist_pct=min(
                 abs(price - r) / price * 100

@@ -244,6 +244,18 @@ class SignalTick(Base):
     cumulative_liq_bias: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
     # Previous day structure (ABOVE_PDH / BETWEEN / BELOW_PDL)
     prev_day_structure: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    prev_day_high: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_day_low: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_day_eq: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Previous week structure
+    prev_week_structure: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    prev_week_high: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_week_low: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prev_week_eq: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # OBI raw slope (direction already stored above; raw value for calibration)
+    obi_slope: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # 4H compression ratio (complement to boolean is_compressed)
+    compression_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # Nearest round number zone distance %
     round_number_dist_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # 4H compression flag
@@ -485,6 +497,17 @@ async def init_db():
             ("ha_6h_high", "REAL"),
             ("ha_6h_low", "REAL"),
             ("ha_prev_6h_color", "TEXT"),
+            # Previous day/week levels
+            ("prev_day_high", "REAL"),
+            ("prev_day_low", "REAL"),
+            ("prev_day_eq", "REAL"),
+            ("prev_week_structure", "TEXT"),
+            ("prev_week_high", "REAL"),
+            ("prev_week_low", "REAL"),
+            ("prev_week_eq", "REAL"),
+            # OBI raw slope and compression ratio
+            ("obi_slope", "REAL"),
+            ("compression_ratio", "REAL"),
         ]
         for col_name, col_type in new_signal_tick_cols:
             try:

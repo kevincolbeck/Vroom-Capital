@@ -207,6 +207,10 @@ class HyblockMonitor:
         p_nls      = {"coin": COIN, "exchange": NLS_EXCHANGES, "timeframe": "1h", "limit": 5}
         # 4H compression detection (Binance is price reference)
         p_4h       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "4h", "limit": 20}
+        # Previous day levels — daily timeframe, limit=2 ensures we get completed previous day
+        p_pd       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1d", "limit": 2}
+        # Previous week levels — daily timeframe, limit=2 gets the most recent completed week bar
+        p_pw       = {"coin": COIN, "exchange": "binance_perp_stable", "timeframe": "1d", "limit": 2}
 
         async with httpx.AsyncClient() as client:
             keys = [
@@ -221,7 +225,7 @@ class HyblockMonitor:
                 # CVD and OI multi-bar (full response, not unwrapped)
                 "volume_delta_multi", "cvd_spot", "oi_multi",
                 # WarriorAI-aligned signals
-                "true_retail", "global_accts", "net_ls_delta", "prev_day", "kline_4h",
+                "true_retail", "global_accts", "net_ls_delta", "prev_day", "prev_week", "kline_4h",
                 # bidAsk multi-exchange: upgrade OBI from Binance-only to 5-exchange average
                 "bid_ask_bybit", "bid_ask_okx", "bid_ask_bitget", "bid_ask_hyper",
                 # cumulativeLiqLevel multi-exchange: same 4 exchanges as liquidationLevels
@@ -255,7 +259,7 @@ class HyblockMonitor:
                 self._fetch(client, "liquidationLevels",      p_snap_bybit),
                 self._fetch(client, "liquidationLevels",      p_snap_phemex),
                 # Liq level size/count delta oscillators
-                # liqLevelsSize: no exchange supports it — kept as no-op placeholder
+                # liqLevelsSize: binance_perp_stable per API docs example
                 # liqLevelsCount: binance_perp_stable returns 422; use coin/bitmex/phemex
                 self._fetch(client, "liqLevelsSize",          p_ts,       unwrap_latest=True),
                 self._fetch(client, "liqLevelsCount",         p_ts_bcoin, unwrap_latest=True),
@@ -272,7 +276,8 @@ class HyblockMonitor:
                 self._fetch(client, "trueRetailLongShort",    p_ts,       unwrap_latest=True),
                 self._fetch(client, "globalAccounts",         p_ts,       unwrap_latest=True),
                 self._fetch(client, "netLongShortDelta",      p_nls,      unwrap_latest=True),   # multi-exchange
-                self._fetch(client, "pdLevels",               p_ts,       unwrap_latest=True),
+                self._fetch(client, "pdLevels",               p_pd,       unwrap_latest=True),
+                self._fetch(client, "pwLevels",               p_pw,       unwrap_latest=True),
                 self._fetch(client, "klines",                 p_4h,       unwrap_latest=False),
                 # bidAsk multi-exchange
                 self._fetch(client, "bidAsk",                 p_ts_bybit,  unwrap_latest=True),
@@ -349,7 +354,8 @@ class HyblockMonitor:
         _ga_sources = [raw["global_accts"], raw["global_accts_bcoin"], raw["global_accts_bbybit"]]
         global_accts = self._merge_retail_ratio(_ga_sources)
         net_ls_delta = self._parse_net_ls_delta(raw["net_ls_delta"])
-        prev_day = self._parse_prev_day_structure(raw["prev_day"], current_price)
+        prev_day  = self._parse_prev_day_structure(raw["prev_day"],  current_price)
+        prev_week = self._parse_prev_week_structure(raw["prev_week"], current_price)
         compression = self._parse_4h_compression(raw["kline_4h"])
 
         result = {
@@ -398,6 +404,8 @@ class HyblockMonitor:
             "net_ls_delta": net_ls_delta,
             # Previous day levels + structure
             **prev_day,
+            # Previous week levels + structure
+            **prev_week,
             # 4H compression / volatility expansion detection
             "is_compressed": compression["is_compressed"],
             "compression_ratio": compression["compression_ratio"],
@@ -899,6 +907,33 @@ class HyblockMonitor:
                 score += 3.0
             elif above_pdo is False and direction == "SHORT":
                 score += 3.0
+
+        # ── Previous week structure ───────────────────────────────────────────────
+        # PWH/PWL = major institutional reference levels; breaking them weekly
+        # confirms trend continuation; failing inside them signals range-bound.
+        pws = data.get("prev_week_structure", "UNKNOWN")
+        if pws == "ABOVE_PWH":
+            if direction == "LONG":
+                score += 6.0
+                notes.append("price above PWH — bullish weekly break (+6)")
+            else:
+                score -= 4.0
+                warnings.append("price above PWH — counter-trend SHORT vs weekly structure")
+        elif pws == "BELOW_PWL":
+            if direction == "SHORT":
+                score += 6.0
+                notes.append("price below PWL — bearish weekly break (+6)")
+            else:
+                score -= 4.0
+                warnings.append("price below PWL — counter-trend LONG vs weekly structure")
+        elif pws == "BETWEEN":
+            above_pwo = data.get("prev_week_above_pwo")
+            if above_pwo is True and direction == "LONG":
+                score += 2.0
+                notes.append("price above PW open — mild weekly bullish bias (+2)")
+            elif above_pwo is False and direction == "SHORT":
+                score += 2.0
+                notes.append("price below PW open — mild weekly bearish bias (+2)")
 
         description = " | ".join(notes) if notes else "No strong Hyblock signals"
         return round(score, 1), description, warnings, should_block
@@ -1504,13 +1539,17 @@ class HyblockMonitor:
         """
         Parse previous day levels and determine price structure.
         ABOVE_PDH = bullish structural break; BELOW_PDL = bearish break; BETWEEN = neutral.
+        pdEq = equilibrium midpoint (avg of high and low) — key mean-reversion target.
         """
-        pdh = float(data.get("pdHigh", data.get("pd_high", data.get("high", 0.0))) or 0.0)
-        pdl = float(data.get("pdLow",  data.get("pd_low",  data.get("low",  0.0))) or 0.0)
-        pdo = float(data.get("pdOpen", data.get("pd_open", data.get("open", 0.0))) or 0.0)
+        pdh  = float(data.get("pdHigh", data.get("pd_high", data.get("high", 0.0))) or 0.0)
+        pdl  = float(data.get("pdLow",  data.get("pd_low",  data.get("low",  0.0))) or 0.0)
+        pdo  = float(data.get("pdOpen", data.get("pd_open", data.get("open", 0.0))) or 0.0)
+        pdeq = float(data.get("pdEq",   data.get("pd_eq",   0.0)) or 0.0)
+        if not pdeq and pdh > 0 and pdl > 0:
+            pdeq = (pdh + pdl) / 2.0  # compute locally if API omits it
         if pdh <= 0 or pdl <= 0 or current_price <= 0:
             return {"prev_day_high": None, "prev_day_low": None, "prev_day_open": None,
-                    "prev_day_structure": "UNKNOWN"}
+                    "prev_day_eq": None, "prev_day_structure": "UNKNOWN"}
         if current_price > pdh:
             structure = "ABOVE_PDH"
         elif current_price < pdl:
@@ -1521,8 +1560,39 @@ class HyblockMonitor:
             "prev_day_high":      round(pdh, 2),
             "prev_day_low":       round(pdl, 2),
             "prev_day_open":      round(pdo, 2),
+            "prev_day_eq":        round(pdeq, 2) if pdeq else None,
             "prev_day_structure": structure,
             "prev_day_above_pdo": (current_price > pdo) if pdo > 0 else None,
+        }
+
+    def _parse_prev_week_structure(self, data: Dict, current_price: float) -> Dict:
+        """
+        Parse previous week levels and determine price structure vs weekly range.
+        ABOVE_PWH = bullish weekly break; BELOW_PWL = bearish weekly break; BETWEEN = neutral.
+        pwEq = equilibrium midpoint (avg of high and low).
+        """
+        pwh  = float(data.get("pwHigh", 0.0) or 0.0)
+        pwl  = float(data.get("pwLow",  0.0) or 0.0)
+        pwo  = float(data.get("pwOpen", 0.0) or 0.0)
+        pweq = float(data.get("pwEq",   0.0) or 0.0)
+        if not pweq and pwh > 0 and pwl > 0:
+            pweq = (pwh + pwl) / 2.0
+        if pwh <= 0 or pwl <= 0 or current_price <= 0:
+            return {"prev_week_high": None, "prev_week_low": None, "prev_week_open": None,
+                    "prev_week_eq": None, "prev_week_structure": "UNKNOWN"}
+        if current_price > pwh:
+            structure = "ABOVE_PWH"
+        elif current_price < pwl:
+            structure = "BELOW_PWL"
+        else:
+            structure = "BETWEEN"
+        return {
+            "prev_week_high":      round(pwh, 2),
+            "prev_week_low":       round(pwl, 2),
+            "prev_week_open":      round(pwo, 2),
+            "prev_week_eq":        round(pweq, 2) if pweq else None,
+            "prev_week_structure": structure,
+            "prev_week_above_pwo": (current_price > pwo) if pwo > 0 else None,
         }
 
     def _parse_4h_compression(self, data: Dict) -> Dict:
