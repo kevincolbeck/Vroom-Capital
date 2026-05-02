@@ -910,23 +910,18 @@ class HyblockMonitor:
         else:
             nearest_side = None
 
-        # Wide-range search (10%) for the largest non-zero cluster — dashboard display only.
-        # Heatmap buckets within 2% of current price typically have near-zero size;
-        # meaningful clusters are found 3-10% away.
-        WIDE_MAX_PCT = 0.10
+        # Wide search: largest non-zero cluster anywhere in the heatmap, each direction.
+        # No range cap — nearby clusters are often wiped out after a price move;
+        # the meaningful zones may be 15-30%+ away. Dashboard display only.
         wide_above_pct = wide_above_size = None
         wide_below_pct = wide_below_size = None
         wide_above = [
             (get_px(l), get_size(l)) for l in levels
-            if get_px(l) > current_price
-            and (get_px(l) - current_price) / current_price <= WIDE_MAX_PCT
-            and get_size(l) > 0
+            if get_px(l) > current_price and get_size(l) > 0
         ]
         wide_below = [
             (get_px(l), get_size(l)) for l in levels
-            if 0 < get_px(l) < current_price
-            and (current_price - get_px(l)) / current_price <= WIDE_MAX_PCT
-            and get_size(l) > 0
+            if 0 < get_px(l) < current_price and get_size(l) > 0
         ]
         if wide_above:
             best = max(wide_above, key=lambda x: x[1])
