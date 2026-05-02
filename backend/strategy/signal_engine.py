@@ -439,25 +439,27 @@ class SignalEngine:
             _dist_from_24h_high_pct <= _range_prox
             and obi_dir == "BEARISH"
             and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
-            and candidate_direction != "SHORT"
+            and signal.ha_6h_color == "GREEN"   # higher TF confirms uptrend that created the wick
+            and signal.ha_1h_color == "RED"     # lower TF forming candle has started reversing
         ):
             _wick_fade_mode = True
             candidate_direction = "SHORT"
             logger.info(
                 f"[SHORT] WICK FADE — price {_dist_from_24h_high_pct:.2f}% from 24h high "
-                f"${_24h_high:,.0f} | OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
+                f"${_24h_high:,.0f} | 6h=GREEN 1h=RED | OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
             )
         elif (
             _dist_from_24h_low_pct <= _range_prox
             and obi_dir == "BULLISH"
             and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
-            and candidate_direction != "LONG"
+            and signal.ha_6h_color == "RED"     # higher TF confirms downtrend that created the wick
+            and signal.ha_1h_color == "GREEN"   # lower TF forming candle has started reversing
         ):
             _wick_fade_mode = True
             candidate_direction = "LONG"
             logger.info(
                 f"[LONG] WICK FADE — price {_dist_from_24h_low_pct:.2f}% from 24h low "
-                f"${_24h_low:,.0f} | OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
+                f"${_24h_low:,.0f} | 6h=RED 1h=GREEN | OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
             )
 
         signal.wick_fade_mode = _wick_fade_mode
@@ -633,6 +635,25 @@ class SignalEngine:
             score += _momentum_pts
             signal.ha_1h_aligned_count = 0  # N/A for wick fade
             _breakdown.append(f"casc_risk={casc_risk}({_momentum_pts:+.0f})")
+
+            # 3m HA reversal confirmation (entry timing)
+            # All three TFs now tell the story: 6h extended → 1h reversed (hard gate) → 3m reversal = ideal timing
+            _3m_reversed = (
+                (candidate_direction == "SHORT" and signal.ha_3m_color == "RED") or
+                (candidate_direction == "LONG"  and signal.ha_3m_color == "GREEN")
+            )
+            _3m_still_trend = (
+                (candidate_direction == "SHORT" and signal.ha_3m_color == "GREEN") or
+                (candidate_direction == "LONG"  and signal.ha_3m_color == "RED")
+            )
+            if _3m_reversed:
+                _3m_pts = 10.0
+            elif _3m_still_trend:
+                _3m_pts = -5.0
+            else:
+                _3m_pts = 0.0
+            score += _3m_pts
+            _breakdown.append(f"3m_reversal={'yes' if _3m_reversed else ('no' if _3m_still_trend else 'neutral')}({_3m_pts:+.0f})")
 
         else:
             # ── 6h HA body strength (max 30, direction-aware) ─────────────────
