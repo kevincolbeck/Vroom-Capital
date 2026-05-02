@@ -860,11 +860,11 @@ class HyblockMonitor:
             if btc is not None:
                 return float(btc)
             # All other size fields are in USD — convert to BTC
-            long_s  = l.get("longLiquidationSize",  l.get("longSize",  0.0)) or 0.0
-            short_s = l.get("shortLiquidationSize", l.get("shortSize", 0.0)) or 0.0
+            long_s  = l.get("longLiquidations",    l.get("longLiquidationSize",  l.get("longSize",  0.0))) or 0.0
+            short_s = l.get("shortLiquidations",   l.get("shortLiquidationSize", l.get("shortSize", 0.0))) or 0.0
             if long_s or short_s:
                 return (float(long_s) + float(short_s)) / current_price
-            for key in ("liquidationSize", "size", "totalSize", "notional"):
+            for key in ("totalLiquidations", "liquidationSize", "size", "totalSize", "notional"):
                 v = l.get(key)
                 if v is not None:
                     return float(v) / current_price
