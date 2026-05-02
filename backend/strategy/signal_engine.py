@@ -86,6 +86,11 @@ class TradeSignal:
         # Layer 2: live order book state snapshot at signal time
         self.ob_state: Dict = {}
 
+        # Layer 3: market regime
+        self.regime:           str   = "UNKNOWN"   # TRENDING / RANGING / HIGH_VOL / NEUTRAL
+        self.regime_er:        float = 0.5         # Efficiency Ratio 0-1
+        self.regime_vol_ratio: float = 1.0         # recent ATR / baseline ATR
+
         self.generated_at: datetime = datetime.utcnow()
 
     def to_dict(self) -> Dict:
@@ -134,6 +139,9 @@ class TradeSignal:
             # Gap 3 — 3m momentum burst
             "ha_3m_aligned_count": self.ha_3m_aligned_count,
             "ha_3m_expanding": self.ha_3m_expanding,
+            "regime":           self.regime,
+            "regime_er":        round(self.regime_er, 3),
+            "regime_vol_ratio": round(self.regime_vol_ratio, 3),
             "generated_at": self.generated_at.isoformat(),
         }
 
@@ -161,6 +169,63 @@ class SignalEngine:
         self.ob_monitor: Optional[OrderBookMonitor] = ob_monitor
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
+
+    @staticmethod
+    def _compute_regime(candles_1h: list) -> dict:
+        """
+        Efficiency Ratio (ER) + ATR volatility regime from 1h candles.
+
+        ER = |P_end - P_start| / Σ|ΔP_i| over ER_LOOKBACK candles.
+          ER → 1.0: price moved in a straight line → momentum is sticky → HA_TREND reliable
+          ER → 0.0: price zigzagged with no net progress → mean-reversion rules → wick fades reliable
+
+        Volatility ratio = mean(last 5 ATRs) / mean(last 24 ATRs).
+        HIGH_VOL is checked before ER: a breakout has high ER AND high vol; we want to
+        classify it as HIGH_VOL first to enforce smaller size regardless of direction.
+        """
+        ER_LOOKBACK  = 20   # 20h window — captures the current session's character
+        VOL_SHORT    = 5    # recent 5-candle ATR (last ~5h)
+        VOL_LOOKBACK = 24   # 24-candle baseline (one full day)
+
+        candle_data = [
+            (c.get("close", 0.0), c.get("high", 0.0), c.get("low", 0.0))
+            for c in candles_1h
+            if c.get("close", 0.0) > 0 and c.get("high", 0.0) > 0 and c.get("low", 0.0) > 0
+        ]
+        if len(candle_data) < ER_LOOKBACK + 1:
+            return {"regime": "UNKNOWN", "er": 0.5, "vol_ratio": 1.0}
+
+        closes = [x[0] for x in candle_data]
+        highs  = [x[1] for x in candle_data]
+        lows   = [x[2] for x in candle_data]
+
+        # ── Efficiency Ratio ──────────────────────────────────────────────────
+        er_window = closes[-(ER_LOOKBACK + 1):]
+        net_move  = abs(er_window[-1] - er_window[0])
+        path_len  = sum(abs(er_window[i] - er_window[i - 1]) for i in range(1, len(er_window)))
+        er = net_move / path_len if path_len > 0 else 0.0
+
+        # ── Volatility ratio (ATR proxy: high - low per candle) ───────────────
+        if len(highs) >= VOL_LOOKBACK:
+            atrs = [highs[i] - lows[i] for i in range(-VOL_LOOKBACK, 0)]
+            recent_atr   = sum(atrs[-VOL_SHORT:]) / VOL_SHORT
+            baseline_atr = sum(atrs) / len(atrs)
+            vol_ratio = recent_atr / baseline_atr if baseline_atr > 0 else 1.0
+        else:
+            vol_ratio = 1.0
+
+        # HIGH_VOL supersedes ER classification — a breakout candle spike is risky
+        # for both modes regardless of whether it looks "trending" on ER alone.
+        if vol_ratio > 1.8:
+            regime = "HIGH_VOL"
+        elif er > 0.35:
+            regime = "TRENDING"
+        elif er < 0.15:
+            regime = "RANGING"
+        else:
+            regime = "NEUTRAL"
+
+        return {"regime": regime, "er": round(er, 3), "vol_ratio": round(vol_ratio, 3)}
 
     async def generate_signal(
         self,
@@ -245,9 +310,15 @@ class SignalEngine:
             # Split — default LONG; cascade direction will override after fetch
             candidate_direction = "LONG"
 
+        # ── Market regime — computed once, used throughout scoring ───────────
+        _regime_data     = SignalEngine._compute_regime(candles_1h)
+        _regime          = _regime_data["regime"]
+        _regime_modifier = 1.0   # may be reduced in HIGH_VOL; applied to final size
+
         logger.info(
             f"[{candidate_direction}] HA preliminary ({_green_votes}G/{_red_votes}R): "
-            f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
+            f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color} | "
+            f"regime={_regime} ER={_regime_data['er']:.3f} vol={_regime_data['vol_ratio']:.2f}"
         )
 
         # Start Hyblock fetch early so it runs concurrently with sync filters below
@@ -1028,6 +1099,50 @@ class SignalEngine:
                     score -= 15.0
                     _breakdown.append(f"live_cascade={_casc_live_dir}/opp(-15)")
 
+        # ── Market regime: Efficiency Ratio + volatility ──────────────────────
+        # HA_TREND and WICK_FADE have inverse relationships with regime:
+        #   TRENDING  + HA_TREND  = aligned  → reinforces; price moving efficiently means
+        #                                       momentum continues (what HA_TREND needs)
+        #   TRENDING  + WICK_FADE = opposed  → fading a trend that's proven to persist is
+        #                                       high-risk; trend can easily overrun the fade
+        #   RANGING   + HA_TREND  = opposed  → trend signals whipsaw in choppy conditions;
+        #                                       HA flips before follow-through materializes
+        #   RANGING   + WICK_FADE = aligned  → range extremes are exactly where wick fades
+        #                                       work; price has no momentum to break away
+        #   HIGH_VOL  + either    = caution  → expanded volatility is dangerous for both;
+        #                                       stops get hit by noise, slippage is high;
+        #                                       wick fades are worse (can't fade a spike)
+        #   NEUTRAL               = no edge  → market character unclear; no adjustment
+        if _regime == "TRENDING":
+            if not _wick_fade_mode:
+                score += 10.0
+                _breakdown.append("regime=TRENDING/trend(+10)")
+            else:
+                score -= 12.0
+                _breakdown.append("regime=TRENDING/fade(-12)")
+        elif _regime == "RANGING":
+            if not _wick_fade_mode:
+                score -= 12.0
+                _breakdown.append("regime=RANGING/trend(-12)")
+            else:
+                score += 8.0
+                _breakdown.append("regime=RANGING/fade(+8)")
+        elif _regime == "HIGH_VOL":
+            if not _wick_fade_mode:
+                score -= 5.0
+                _regime_modifier = 0.75
+                _breakdown.append("regime=HIGH_VOL/trend(-5/0.75x)")
+            else:
+                score -= 15.0
+                _regime_modifier = 0.5
+                _breakdown.append("regime=HIGH_VOL/fade(-15/0.5x)")
+        else:
+            _breakdown.append(f"regime={_regime}(+0)")
+
+        signal.regime           = _regime
+        signal.regime_er        = _regime_data["er"]
+        signal.regime_vol_ratio = _regime_data["vol_ratio"]
+
         score = min(100.0, max(0.0, score))
         signal.confidence_score = score
         logger.info(f"Score breakdown [{candidate_direction}]: {' | '.join(_breakdown)} → raw={score:.1f}%")
@@ -1066,7 +1181,11 @@ class SignalEngine:
         else:
             funding_modifier = funding_analysis.get("position_modifier", 1.0)
 
-        combined_modifier = funding_modifier * macro_context.get("position_size_modifier", 1.0)
+        combined_modifier = (
+            funding_modifier
+            * macro_context.get("position_size_modifier", 1.0)
+            * _regime_modifier
+        )
         signal.position_size_modifier = max(0.25, combined_modifier)
 
         # ─── Final: Build entry reason ────────────────────────────────────
@@ -1089,7 +1208,8 @@ class SignalEngine:
             else "HA_TREND"
         )
         signal.entry_reason = (
-            f"{candidate_direction} | Mode={_mode_str} | Cascade={_casc_str} | MII={mii:+.2f} | "
+            f"{candidate_direction} | Mode={_mode_str} | Regime={_regime}(ER={_regime_data['er']:.2f}) | "
+            f"Cascade={_casc_str} | MII={mii:+.2f} | "
             f"VR={signal.volume_ratio:+.2f} | BSR={signal.buy_sell_count_ratio:+.2f} | "
             f"HA: 3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color} | "
             f"LiqTarget={_liq_target_str} | Zone={zone_key} ({zone_position}) | "
