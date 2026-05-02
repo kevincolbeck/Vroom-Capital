@@ -383,6 +383,8 @@ class BotEngine:
                                 self._liq_target = signal.liq_target_price
                                 if self._liq_target:
                                     logger.info(f"Liq cluster TP target set: ${self._liq_target:,.0f}")
+                                # Record zone signal only on confirmed trade entry — not on monitoring ticks
+                                self.signal_engine.zone_tracker.record_signal(signal.zone_key, signal.direction)
                                 await self._save_zone_state(db)
                                 if settings.copy_trading_enabled:
                                     await copy_manager.open_copy_positions(new_position, signal.to_dict())

@@ -902,9 +902,6 @@ class SignalEngine:
             f"Size={signal.position_size_modifier:.2f}x"
         )
 
-        # Record the zone signal
-        self.zone_tracker.record_signal(zone_key, candidate_direction)
-
         logger.info(f"Signal generated: {signal.direction} ({signal.strength}) — {signal.entry_reason}")
         return signal
 
