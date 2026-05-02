@@ -748,28 +748,38 @@ export default function Dashboard() {
                   </div>
                 )}
                 {/* Liq clusters (heatmap) */}
-                {(hyblockData.liq_clusters?.above_pct || hyblockData.liq_clusters?.below_pct) && (
+                {(hyblockData.liq_clusters?.above_pct || hyblockData.liq_clusters?.below_pct || hyblockData.liq_clusters?.above_wide_pct || hyblockData.liq_clusters?.below_wide_pct) && (
                   <div className="border-t border-dark-700 pt-2 space-y-1">
                     <div className="text-gray-500 mb-1">Liq Heatmap</div>
-                    {hyblockData.liq_clusters.above_pct != null && (
+                    {(hyblockData.liq_clusters.above_pct != null || hyblockData.liq_clusters.above_wide_pct != null) && (
                       <div className="flex justify-between text-[11px]">
                         <span className="text-gray-600">Above</span>
                         <span className="font-mono text-loss/80">
-                          +{hyblockData.liq_clusters.above_pct}%
-                          {hyblockData.liq_clusters.above_size > 0 && (
-                            <span className="text-gray-500"> · {Number(hyblockData.liq_clusters.above_size).toFixed(0)} BTC</span>
-                          )}
+                          {(() => {
+                            const useWide = !(hyblockData.liq_clusters.above_size > 0) && (hyblockData.liq_clusters.above_wide_size > 0);
+                            const pct = useWide ? hyblockData.liq_clusters.above_wide_pct : hyblockData.liq_clusters.above_pct;
+                            const size = useWide ? hyblockData.liq_clusters.above_wide_size : hyblockData.liq_clusters.above_size;
+                            return <>
+                              +{pct}%
+                              {size > 0 && <span className="text-gray-500"> · {Number(size).toFixed(0)} BTC</span>}
+                            </>;
+                          })()}
                         </span>
                       </div>
                     )}
-                    {hyblockData.liq_clusters.below_pct != null && (
+                    {(hyblockData.liq_clusters.below_pct != null || hyblockData.liq_clusters.below_wide_pct != null) && (
                       <div className="flex justify-between text-[11px]">
                         <span className="text-gray-600">Below</span>
                         <span className="font-mono text-profit/80">
-                          -{hyblockData.liq_clusters.below_pct}%
-                          {hyblockData.liq_clusters.below_size > 0 && (
-                            <span className="text-gray-500"> · {Number(hyblockData.liq_clusters.below_size).toFixed(0)} BTC</span>
-                          )}
+                          {(() => {
+                            const useWide = !(hyblockData.liq_clusters.below_size > 0) && (hyblockData.liq_clusters.below_wide_size > 0);
+                            const pct = useWide ? hyblockData.liq_clusters.below_wide_pct : hyblockData.liq_clusters.below_pct;
+                            const size = useWide ? hyblockData.liq_clusters.below_wide_size : hyblockData.liq_clusters.below_size;
+                            return <>
+                              -{pct}%
+                              {size > 0 && <span className="text-gray-500"> · {Number(size).toFixed(0)} BTC</span>}
+                            </>;
+                          })()}
                         </span>
                       </div>
                     )}

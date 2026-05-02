@@ -841,8 +841,9 @@ class HyblockMonitor:
             levels = list(levels.values())
         if not levels or current_price <= 0:
             return {"above_pct": None, "below_pct": None, "nearest_side": None,
-                    "above_size": 0.0, "below_size": 0.0}
-        logger.debug(f"Heatmap sample item keys: {list(levels[0].keys()) if levels else 'empty'} | sample: {levels[0]}")
+                    "above_size": 0.0, "below_size": 0.0,
+                    "above_wide_pct": None, "above_wide_size": 0.0,
+                    "below_wide_pct": None, "below_wide_size": 0.0}
 
         def get_px(l: Dict) -> float:
             start = l.get("startingPrice")
@@ -909,14 +910,45 @@ class HyblockMonitor:
         else:
             nearest_side = None
 
+        # Wide-range search (10%) for the largest non-zero cluster — dashboard display only.
+        # Heatmap buckets within 2% of current price typically have near-zero size;
+        # meaningful clusters are found 3-10% away.
+        WIDE_MAX_PCT = 0.10
+        wide_above_pct = wide_above_size = None
+        wide_below_pct = wide_below_size = None
+        wide_above = [
+            (get_px(l), get_size(l)) for l in levels
+            if get_px(l) > current_price
+            and (get_px(l) - current_price) / current_price <= WIDE_MAX_PCT
+            and get_size(l) > 0
+        ]
+        wide_below = [
+            (get_px(l), get_size(l)) for l in levels
+            if 0 < get_px(l) < current_price
+            and (current_price - get_px(l)) / current_price <= WIDE_MAX_PCT
+            and get_size(l) > 0
+        ]
+        if wide_above:
+            best = max(wide_above, key=lambda x: x[1])
+            wide_above_pct  = round((best[0] - current_price) / current_price * 100, 2)
+            wide_above_size = round(best[1], 2)
+        if wide_below:
+            best = max(wide_below, key=lambda x: x[1])
+            wide_below_pct  = round((current_price - best[0]) / current_price * 100, 2)
+            wide_below_size = round(best[1], 2)
+
         return {
-            "above_pct":    above_pct,
-            "above_price":  above_price_val,
-            "below_pct":    below_pct,
-            "below_price":  below_price_val,
-            "nearest_side": nearest_side,
-            "above_size":   above_size or 0.0,
-            "below_size":   below_size or 0.0,
+            "above_pct":       above_pct,
+            "above_price":     above_price_val,
+            "below_pct":       below_pct,
+            "below_price":     below_price_val,
+            "nearest_side":    nearest_side,
+            "above_size":      above_size or 0.0,
+            "below_size":      below_size or 0.0,
+            "above_wide_pct":  wide_above_pct,
+            "above_wide_size": wide_above_size or 0.0,
+            "below_wide_pct":  wide_below_pct,
+            "below_wide_size": wide_below_size or 0.0,
         }
 
     def _parse_oi_trend(self, data: Dict) -> str:
