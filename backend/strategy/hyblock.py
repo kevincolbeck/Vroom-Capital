@@ -644,17 +644,67 @@ class HyblockMonitor:
             elif frag == "MEDIUM":
                 score -= 1.0
 
-        # ── Cascade risk ──────────────────────────────────────────────────────
+        # ── Cascade risk (direction-aware) ────────────────────────────────────
+        # HIGH cascade is not inherently bad — it means a big forced-liquidation
+        # move is building. The key question is WHICH DIRECTION.
+        #
+        # We vote using two independent signals:
+        #   cumulative_liq_bias  — total $ at risk each side (snapshot)
+        #   liq_levels.cascade_direction — which exact cluster is bigger/closer
+        #
+        # Aligned = cascade primed to move WITH our trade → still volatile but
+        #   directionally sound; small execution-risk penalty only.
+        # Opposed = cascade primed to move AGAINST our trade → we are entering
+        #   into an oncoming liquidation wave → hard block.
+        # Mixed/unclear → elevated uncertainty penalty.
         cascade = data.get("cascade_risk", "LOW")
+        _cum_bias    = data.get("cumulative_liq_bias", "BALANCED")
+        _lv_casc_dir = (data.get("liq_levels") or {}).get("cascade_direction")
+
+        _votes_for     = 0
+        _votes_against = 0
+        if direction == "LONG":
+            if _cum_bias == "SHORT_HEAVY":    _votes_for     += 1
+            elif _cum_bias == "LONG_HEAVY":   _votes_against += 1
+            if _lv_casc_dir == "LONG":        _votes_for     += 1
+            elif _lv_casc_dir == "SHORT":     _votes_against += 1
+        elif direction == "SHORT":
+            if _cum_bias == "LONG_HEAVY":     _votes_for     += 1
+            elif _cum_bias == "SHORT_HEAVY":  _votes_against += 1
+            if _lv_casc_dir == "SHORT":       _votes_for     += 1
+            elif _lv_casc_dir == "LONG":      _votes_against += 1
+
+        _casc_aligned = _votes_for > _votes_against
+        _casc_opposed = _votes_against > _votes_for
+
         if cascade == "CRITICAL":
             should_block = True
             warnings.append("CRITICAL cascade risk — new entries blocked")
         elif cascade == "HIGH":
-            score -= 10.0
-            warnings.append("HIGH cascade risk — elevated liquidation cascade probability")
+            if _casc_opposed:
+                # Entering into an oncoming cascade on the wrong side — liquidation risk
+                should_block = True
+                warnings.append(
+                    f"HIGH cascade risk AGAINST {direction} "
+                    f"(bias={_cum_bias} casc_dir={_lv_casc_dir}) — blocked"
+                )
+            elif _casc_aligned:
+                # Cascade primed for our direction — this IS our setup, just volatile
+                score -= 3.0
+                warnings.append(
+                    f"HIGH cascade aligned with {direction} — directionally sound but volatile (-3)"
+                )
+            else:
+                # Direction unclear — execution risk without edge
+                score -= 8.0
+                warnings.append("HIGH cascade risk — direction unclear, elevated uncertainty (-8)")
         elif cascade == "MEDIUM":
-            score -= 3.0
-            warnings.append("MEDIUM cascade risk")
+            if _casc_opposed:
+                score -= 5.0
+                warnings.append(f"MEDIUM cascade risk against {direction} (-5)")
+            else:
+                score -= 1.0
+                warnings.append("MEDIUM cascade risk — slightly elevated volatility (-1)")
 
         # ── Liq levels size/count delta (cascade initiation signal) ──────────
         # liq_levels_size_delta  < 0 → liq positions shrinking (being triggered)
