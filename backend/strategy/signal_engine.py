@@ -680,14 +680,19 @@ class SignalEngine:
             _casc_size = signal.liq_level_long_size
 
         if _casc_pct is not None:
+            # Tight proximity scoring for scalp strategy — distant clusters irrelevant
+            # LONG: SHORT cluster above = short squeeze magnet; SHORT: LONG below = cascade target
+            # Closer = more imminent trigger = much higher urgency
             if _casc_pct <= 0.3:
-                _prox_pts = 5.0
-            elif _casc_pct <= 0.7:
+                _prox_pts = 8.0
+            elif _casc_pct <= 0.5:
+                _prox_pts = 6.0
+            elif _casc_pct <= 1.0:
                 _prox_pts = 3.0
             elif _casc_pct <= 1.5:
-                _prox_pts = 2.0
-            else:
                 _prox_pts = 1.0
+            else:
+                _prox_pts = 0.0  # >1.5% away: gate may pass but cluster offers no urgency
             if _casc_size > 3000:
                 _prox_pts += 3.0
             elif _casc_size > 1000:
@@ -707,6 +712,54 @@ class SignalEngine:
             else:
                 score -= 6.0
                 _breakdown.append(f"casc_align=NO(-6)")
+
+        # ── Gap 2: 3m price velocity toward liq target ────────────────────────
+        # Checks if recent 3m price action is moving TOWARD the liq cluster.
+        # A cascade entry benefits most when momentum is already pointing at the target.
+        if not _wick_fade_mode and candles_3m and len(candles_3m) >= 3 and signal.liq_target_price:
+            _recent_3m = candles_3m[-5:]
+            _closes_3m = [c.get("close", 0.0) for c in _recent_3m if c.get("close", 0.0) > 0]
+            if len(_closes_3m) >= 2:
+                _price_delta_3m = _closes_3m[-1] - _closes_3m[0]
+                _toward_target = (
+                    _price_delta_3m > 0 if signal.liq_target_price > current_price
+                    else _price_delta_3m < 0
+                )
+                _vel_pct_3m = abs(_price_delta_3m) / current_price * 100
+                if _toward_target:
+                    _vel_pts = 5.0 if _vel_pct_3m >= 0.1 else 2.0
+                    score += _vel_pts
+                    _breakdown.append(f"vel=toward({_vel_pts:+.0f})")
+                else:
+                    _vel_pts = -5.0 if _vel_pct_3m >= 0.1 else -2.0
+                    score += _vel_pts
+                    _breakdown.append(f"vel=away({_vel_pts:+.0f})")
+            else:
+                _breakdown.append("vel=n/a(+0)")
+
+        # ── Gap 3: 3m HA momentum burst (fine-grain entry timing) ─────────────
+        # Checks last 3 3m HA candles for directional alignment and expanding bodies.
+        # All aligned + body expanding = burst is starting → ideal entry timing.
+        # Keeps 6h HA as direction filter; 3m burst is the trigger confirmation.
+        if not _wick_fade_mode and ha_3m and len(ha_3m) >= 2:
+            _3m_target = "GREEN" if candidate_direction == "LONG" else "RED"
+            _last3_3m = ha_3m[-3:] if len(ha_3m) >= 3 else ha_3m
+            _3m_aligned = sum(1 for c in _last3_3m if c["color"] == _3m_target)
+            _3m_bodies = [c.get("body", 0.0) for c in _last3_3m]
+            _3m_expanding = len(_3m_bodies) >= 2 and _3m_bodies[-1] > _3m_bodies[0]
+            _3m_n = len(_last3_3m)
+            if _3m_aligned == _3m_n and _3m_expanding:
+                _3m_pts = 8.0   # full burst: all candles aligned + body expanding
+            elif _3m_aligned == _3m_n:
+                _3m_pts = 5.0   # aligned but not yet expanding
+            elif _3m_aligned >= 2 and _3m_n >= 3:
+                _3m_pts = 2.0   # majority aligned
+            else:
+                _3m_pts = -3.0  # misaligned — contra-momentum entry
+            score += _3m_pts
+            _breakdown.append(
+                f"3m_burst={_3m_aligned}/{_3m_n}/{'expand' if _3m_expanding else 'flat'}({_3m_pts:+.0f})"
+            )
 
         # ── Zone position bonus ───────────────────────────────────────────────
         if (candidate_direction == "SHORT" and zone_position == "TOP"):
