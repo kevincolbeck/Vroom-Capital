@@ -19,6 +19,7 @@ from backend.strategy.order_flow import SpotOrderFlowMonitor
 from backend.strategy.hyblock import HyblockMonitor
 from backend.strategy.liquidation_stream import LiquidationStreamMonitor
 from backend.strategy.orderbook_stream import OrderBookMonitor, LARGE_WALL_BTC, MIN_WALL_BTC
+from backend.strategy.trade_flow import TradeFlowMonitor
 from backend.config import settings
 
 
@@ -91,6 +92,9 @@ class TradeSignal:
         self.regime_er:        float = 0.5         # Efficiency Ratio 0-1
         self.regime_vol_ratio: float = 1.0         # recent ATR / baseline ATR
 
+        # Layer 5: aggTrade taker flow snapshot
+        self.trade_flow_state: Dict = {}
+
         self.generated_at: datetime = datetime.utcnow()
 
     def to_dict(self) -> Dict:
@@ -142,6 +146,7 @@ class TradeSignal:
             "regime":           self.regime,
             "regime_er":        round(self.regime_er, 3),
             "regime_vol_ratio": round(self.regime_vol_ratio, 3),
+            "trade_flow":       self.trade_flow_state,
             "generated_at": self.generated_at.isoformat(),
         }
 
@@ -155,6 +160,7 @@ class SignalEngine:
         self,
         liq_stream_monitor: Optional["LiquidationStreamMonitor"] = None,
         ob_monitor: Optional["OrderBookMonitor"] = None,
+        trade_flow_monitor: Optional["TradeFlowMonitor"] = None,
     ):
         self.zone_tracker = ZoneTracker(
             zone_size=settings.zone_size_usd,
@@ -167,6 +173,7 @@ class SignalEngine:
         self.hyblock_monitor = HyblockMonitor()
         self.liq_stream_monitor: Optional[LiquidationStreamMonitor] = liq_stream_monitor
         self.ob_monitor: Optional[OrderBookMonitor] = ob_monitor
+        self.trade_flow_monitor: Optional[TradeFlowMonitor] = trade_flow_monitor
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
 
@@ -918,6 +925,36 @@ class SignalEngine:
         else:
             _breakdown.append(f"funding={funding_sentiment}(+0)")
 
+        # ── Funding rate trajectory ───────────────────────────────────────────
+        # Amplifies or attenuates the existing funding signal — never standalone.
+        # RISING = funding moving positive = longs getting more overcrowded.
+        # FALLING = funding moving negative = shorts getting more overcrowded.
+        _traj = self.funding_monitor.get_trajectory()
+        _traj_dir = _traj["trajectory"]
+        _traj_pts = 0.0
+        if _traj_dir != "FLAT":
+            if candidate_direction == "LONG":
+                if _traj_dir == "FALLING" and _fs == "BULLISH_CONTRARIAN":
+                    _traj_pts = 4.0   # squeeze pressure building (shorts more crowded)
+                elif _traj_dir == "RISING" and _fs == "BEARISH_CONTRARIAN":
+                    _traj_pts = -3.0  # long crowding intensifying
+                elif _traj_dir == "FALLING" and _fs == "BEARISH_CONTRARIAN":
+                    _traj_pts = 2.0   # long headwind easing
+                elif _traj_dir == "RISING" and _fs == "BULLISH_CONTRARIAN":
+                    _traj_pts = -2.0  # short tailwind easing
+            else:  # SHORT
+                if _traj_dir == "RISING" and _fs == "BEARISH_CONTRARIAN":
+                    _traj_pts = 4.0   # squeeze pressure building (longs more crowded)
+                elif _traj_dir == "FALLING" and _fs == "BULLISH_CONTRARIAN":
+                    _traj_pts = -3.0  # short crowding intensifying
+                elif _traj_dir == "RISING" and _fs == "BULLISH_CONTRARIAN":
+                    _traj_pts = 2.0   # short headwind easing
+                elif _traj_dir == "FALLING" and _fs == "BEARISH_CONTRARIAN":
+                    _traj_pts = -2.0  # long tailwind easing
+        if _traj_pts != 0.0:
+            score += _traj_pts
+            _breakdown.append(f"funding_traj={_traj_dir}({_traj_pts:+.0f})")
+
         # ── Macro ─────────────────────────────────────────────────────────────
         macro_mod = macro_context.get("position_size_modifier", 1.0)
         macro_pts = (macro_mod - 0.5) * 14.0   # max +7 at mod=1.5, typical +7 at mod=1.0
@@ -1085,6 +1122,48 @@ class SignalEngine:
 
             score += _ob_pts
             signal.ob_state = _ob
+
+        # ── aggTrade taker flow ───────────────────────────────────────────────
+        # Executed futures taker volume — buyers/sellers who paid the spread to enter.
+        # Unlike OBI (can be spoofed) and CVD (delayed), this is raw executed conviction.
+        # 5m: current pressure; 15m: sustained vs spike context.
+        # Wick fades weight this more: flow reversing AT the extreme is the entry signal.
+        if self.trade_flow_monitor is not None:
+            _tf = self.trade_flow_monitor.get_live_state()
+            signal.trade_flow_state = _tf
+            tbr_5m  = _tf.get("taker_buy_ratio_5m",  0.5)
+            tbr_15m = _tf.get("taker_buy_ratio_15m", 0.5)
+            _tf_pts = 0.0
+
+            _sustained_buy  = tbr_5m > 0.60 and tbr_15m > 0.55
+            _burst_buy      = tbr_5m > 0.60
+            _sustained_sell = tbr_5m < 0.40 and tbr_15m < 0.45
+            _burst_sell     = tbr_5m < 0.40
+
+            if candidate_direction == "LONG":
+                if _sustained_buy:
+                    _tf_pts = 8.0 if _wick_fade_mode else 6.0
+                elif _burst_buy:
+                    _tf_pts = 4.0 if _wick_fade_mode else 3.0
+                elif _sustained_sell:
+                    _tf_pts = -8.0 if _wick_fade_mode else -6.0
+                elif _burst_sell:
+                    _tf_pts = -4.0 if _wick_fade_mode else -3.0
+            else:  # SHORT
+                if _sustained_sell:
+                    _tf_pts = 8.0 if _wick_fade_mode else 6.0
+                elif _burst_sell:
+                    _tf_pts = 4.0 if _wick_fade_mode else 3.0
+                elif _sustained_buy:
+                    _tf_pts = -8.0 if _wick_fade_mode else -6.0
+                elif _burst_buy:
+                    _tf_pts = -4.0 if _wick_fade_mode else -3.0
+
+            if _tf_pts != 0.0:
+                score += _tf_pts
+                _breakdown.append(f"aggflow={tbr_5m:.2f}/{tbr_15m:.2f}({_tf_pts:+.0f})")
+            else:
+                _breakdown.append(f"aggflow={tbr_5m:.2f}/neutral(+0)")
 
         # ── Live liquidation cascade confirmation ─────────────────────────────
         if self.liq_stream_monitor is not None:

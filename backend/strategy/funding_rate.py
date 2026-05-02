@@ -6,8 +6,9 @@ When all exchanges agree the rate is extreme, that's the strongest signal.
 Mixed readings dampen the average and reduce conviction.
 """
 import asyncio
+import time
 import httpx
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 
@@ -19,6 +20,7 @@ class FundingRateMonitor:
 
     def __init__(self):
         self._cache: Dict[str, Optional[float]] = {}
+        self._history: List[tuple] = []  # [(timestamp_s, avg_rate), ...]
 
     async def fetch_gateio_funding(self) -> Optional[float]:
         """Gate.io — top-5 exchange by volume, accessible from all regions."""
@@ -136,6 +138,9 @@ class FundingRateMonitor:
             }
 
         avg_rate = sum(valid_rates.values()) / len(valid_rates)
+        self._history.append((time.time(), avg_rate))
+        if len(self._history) > 60:
+            self._history = self._history[-60:]
         all_positive = all(v > 0 for v in valid_rates.values())
         all_negative = all(v < 0 for v in valid_rates.values())
 
@@ -177,6 +182,40 @@ class FundingRateMonitor:
             "description": description,
             "position_modifier": modifier,
         }
+
+    def get_trajectory(self) -> Dict:
+        """Linear regression slope over last 30 funding readings.
+
+        Positive slope (RISING) = funding moving toward positive = longs getting more overcrowded.
+        Negative slope (FALLING) = funding moving toward negative = shorts getting more overcrowded.
+        Threshold: ±0.000002/min (≈0.012%/hr change rate).
+        """
+        TRAJ_LOOKBACK  = 30
+        TRAJ_THRESHOLD = 0.000002  # per minute
+
+        h = self._history[-TRAJ_LOOKBACK:] if len(self._history) >= 2 else self._history
+        n = len(h)
+        if n < 2:
+            return {"trajectory": "FLAT", "slope_per_min": 0.0, "n": n}
+
+        t0   = h[0][0]
+        xs   = [(t - t0) / 60.0 for t, _ in h]
+        ys   = [r for _, r in h]
+        sx   = sum(xs)
+        sy   = sum(ys)
+        sxy  = sum(x * y for x, y in zip(xs, ys))
+        sx2  = sum(x * x for x in xs)
+        denom = n * sx2 - sx * sx
+        slope = (n * sxy - sx * sy) / denom if denom != 0 else 0.0
+
+        if slope > TRAJ_THRESHOLD:
+            trajectory = "RISING"
+        elif slope < -TRAJ_THRESHOLD:
+            trajectory = "FALLING"
+        else:
+            trajectory = "FLAT"
+
+        return {"trajectory": trajectory, "slope_per_min": round(slope, 8), "n": n}
 
     def get_trade_confirmation(self, direction: str, funding_analysis: Dict) -> Tuple[bool, str]:
         """
