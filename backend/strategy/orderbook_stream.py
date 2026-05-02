@@ -22,8 +22,10 @@ LARGE_WALL_BTC    = 150.0  # threshold for "large" wall scoring
 IMBALANCE_LEVELS  = 15     # top N levels used for book imbalance ratio
 WALL_SEARCH_PCT   = 2.0    # only scan within ±2% of current price
 
-_SNAPSHOT_URL = "https://fstream.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=500"
-_WS_URL       = "wss://fstream.binance.com/ws/btcusdt@depth@100ms"
+# Bybit linear WebSocket — first message type="snapshot" provides full book,
+# subsequent type="delta" messages are incremental. No REST snapshot needed.
+_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+_WS_SUB = {"op": "subscribe", "args": ["orderbook.200.BTCUSDT"]}
 
 
 class OrderBookMonitor:
@@ -35,7 +37,7 @@ class OrderBookMonitor:
     def __init__(self):
         self._bids: Dict[float, float] = {}   # price → BTC size
         self._asks: Dict[float, float] = {}
-        self._last_update_id: int = 0
+        self._last_seq: int = 0
         self._synced: bool = False
         self._running: bool = False
         self._connected: bool = False
@@ -222,61 +224,47 @@ class OrderBookMonitor:
 
     async def _connect(self):
         import websockets
+        import json as _json
         async with websockets.connect(_WS_URL, ping_interval=20, ping_timeout=15) as ws:
+            await ws.send(_json.dumps(_WS_SUB))
             self._connected = True
             self._synced = False
-            buffer: list = []
-            logger.info("OrderBook WebSocket connected — fetching snapshot")
-
-            # Kick off REST snapshot while simultaneously buffering WS events
-            snap_task = asyncio.create_task(self._fetch_snapshot())
+            self._last_seq = 0
+            logger.info("OrderBook WebSocket connected (Bybit orderbook.200.BTCUSDT)")
 
             async for raw in ws:
                 if not self._running:
                     break
-                msg = json.loads(raw)
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
 
-                if not self._synced:
-                    buffer.append(msg)
+                topic = msg.get("topic", "")
+                if not topic.startswith("orderbook"):
+                    continue
 
-                    # Once snapshot arrives, synchronize and switch to live mode
-                    if snap_task.done():
-                        snap = snap_task.result()
-                        if snap is None:
-                            # Snapshot failed — retry entire connection
-                            logger.warning("Snapshot fetch failed, reconnecting")
-                            return
+                data = msg.get("data", {})
+                msg_type = msg.get("type", "")
 
-                        self._bids = {float(p): float(q) for p, q in snap["bids"]}
-                        self._asks = {float(p): float(q) for p, q in snap["asks"]}
-                        last_id = snap["lastUpdateId"]
+                if msg_type == "snapshot":
+                    # Full book — replace state entirely
+                    self._bids = {float(p): float(q) for p, q in data.get("b", [])}
+                    self._asks = {float(p): float(q) for p, q in data.get("a", [])}
+                    self._last_seq = msg.get("seq", 0)
+                    self._synced = True
+                    logger.info(
+                        f"OrderBook synced — {len(self._bids)} bid levels, "
+                        f"{len(self._asks)} ask levels"
+                    )
 
-                        # Apply buffered deltas in order, skipping stale ones
-                        for evt in buffer:
-                            if evt.get("u", 0) <= last_id:
-                                continue
-                            self._apply_delta(evt.get("b", []), evt.get("a", []))
-                            last_id = evt["u"]
+                elif msg_type == "delta" and self._synced:
+                    seq = msg.get("seq", 0)
+                    if seq and self._last_seq and seq != self._last_seq + 1:
+                        # Sequence gap — book is stale, force reconnect
+                        logger.warning(f"OrderBook seq gap ({self._last_seq} → {seq}), reconnecting")
+                        return
+                    self._apply_delta(data.get("b", []), data.get("a", []))
+                    self._last_seq = seq
 
-                        buffer.clear()
-                        self._synced = True
-                        logger.info(
-                            f"OrderBook synced — {len(self._bids)} bid levels, "
-                            f"{len(self._asks)} ask levels"
-                        )
-                else:
-                    self._apply_delta(msg.get("b", []), msg.get("a", []))
-
-        snap_task.cancel()
         self._connected = False
-
-    async def _fetch_snapshot(self) -> Optional[Dict]:
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(_SNAPSHOT_URL)
-                resp.raise_for_status()
-                return resp.json()
-        except Exception as e:
-            logger.error(f"OrderBook snapshot fetch failed: {e}")
-            return None
