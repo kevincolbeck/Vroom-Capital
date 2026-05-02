@@ -818,7 +818,6 @@ class BotEngine:
         """Check signal ticks from last 25h; fill price outcomes for elapsed horizons."""
         from backend.database import SignalOutcome, SignalTick
         from datetime import timedelta
-        from sqlalchemy import select as _select
 
         client = get_bitunix_client()
         try:
@@ -840,15 +839,15 @@ class BotEngine:
             async with AsyncSessionLocal() as db:
                 cutoff = now - timedelta(hours=25)
                 result = await db.execute(
-                    _select(SignalTick)
+                    select(SignalTick)
                     .where(SignalTick.ts >= cutoff)
-                    .where(SignalTick.direction != None)
+                    .where(SignalTick.direction.isnot(None))
                 )
                 ticks = result.scalars().all()
 
                 for tick in ticks:
                     out_result = await db.execute(
-                        _select(SignalOutcome).where(SignalOutcome.signal_tick_id == tick.id)
+                        select(SignalOutcome).where(SignalOutcome.signal_tick_id == tick.id)
                     )
                     outcome = out_result.scalar_one_or_none()
                     if outcome is None:
