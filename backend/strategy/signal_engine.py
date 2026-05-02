@@ -513,11 +513,8 @@ class SignalEngine:
 
                 signal.liq_target_price = _lvl_price
                 _hm_note = f" heatmap={_hm_size:.0f}BTC@{_hm_pct}%" if _hm_pct is not None else ""
-                logger.info(
-                    f"[LONG] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note} "
-                    f"TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else
-                    f"[LONG] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note}"
-                )
+                _tp_note = f" TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else ""
+                logger.info(f"[LONG] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note}{_tp_note}")
 
             elif candidate_direction == "SHORT":
                 # Exact levels: LONG cluster below price — sole hard gate
@@ -539,11 +536,8 @@ class SignalEngine:
 
                 signal.liq_target_price = _lvl_price
                 _hm_note = f" heatmap={_hm_size:.0f}BTC@{_hm_pct}%" if _hm_pct is not None else ""
-                logger.info(
-                    f"[SHORT] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note} "
-                    f"TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else
-                    f"[SHORT] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note}"
-                )
+                _tp_note = f" TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else ""
+                logger.info(f"[SHORT] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note}{_tp_note}")
 
         # ─── Step 8.95: 6h HA price level gate (skipped for wick fades) ─────
         # WarriorAI enters only when price has returned to the completed 6h HA level
