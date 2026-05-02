@@ -12,6 +12,7 @@ from backend.database import AsyncSessionLocal, BotState, BotStatus, Position, P
 from backend.exchange.bitunix import get_bitunix_client
 from backend.strategy.signal_engine import SignalEngine, TradeSignal
 from backend.strategy.liquidation_stream import LiquidationStreamMonitor
+from backend.strategy.orderbook_stream import OrderBookMonitor
 from backend.trading.position_manager import PositionManager
 from backend.copy_trading.manager import CopyTradingManager
 from backend.config import settings
@@ -26,7 +27,11 @@ class BotEngine:
 
     def __init__(self):
         self.liq_stream_monitor = LiquidationStreamMonitor()
-        self.signal_engine = SignalEngine(liq_stream_monitor=self.liq_stream_monitor)
+        self.ob_monitor = OrderBookMonitor()
+        self.signal_engine = SignalEngine(
+            liq_stream_monitor=self.liq_stream_monitor,
+            ob_monitor=self.ob_monitor,
+        )
         self._running = False
         self._paused = False
         self._task: Optional[asyncio.Task] = None
@@ -48,6 +53,7 @@ class BotEngine:
         self._running = True
         self._paused = False
         self.liq_stream_monitor.start()
+        self.ob_monitor.start()
         await self._load_zone_state()
         await self._restore_liq_target()
         self._task = asyncio.create_task(self._main_loop())
@@ -65,6 +71,7 @@ class BotEngine:
             except asyncio.CancelledError:
                 pass
         self.liq_stream_monitor.stop()
+        self.ob_monitor.stop()
         await self._set_status(BotStatus.STOPPED)
         await self._log("INFO", "BOT", "Bot engine stopped")
         logger.info("Bot engine stopped")

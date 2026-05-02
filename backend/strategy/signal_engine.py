@@ -18,6 +18,7 @@ from backend.strategy.liquidation_monitor import LiquidationMonitor
 from backend.strategy.order_flow import SpotOrderFlowMonitor
 from backend.strategy.hyblock import HyblockMonitor
 from backend.strategy.liquidation_stream import LiquidationStreamMonitor
+from backend.strategy.orderbook_stream import OrderBookMonitor, LARGE_WALL_BTC, MIN_WALL_BTC
 from backend.config import settings
 
 
@@ -82,6 +83,9 @@ class TradeSignal:
         self.ha_3m_aligned_count: int = 0    # out of last 3 3m candles, how many match direction
         self.ha_3m_expanding: bool = False   # True if last body > first body in last 3 candles
 
+        # Layer 2: live order book state snapshot at signal time
+        self.ob_state: Dict = {}
+
         self.generated_at: datetime = datetime.utcnow()
 
     def to_dict(self) -> Dict:
@@ -139,7 +143,11 @@ class SignalEngine:
     Runs all strategy filters and produces a consolidated trade signal.
     """
 
-    def __init__(self, liq_stream_monitor: Optional["LiquidationStreamMonitor"] = None):
+    def __init__(
+        self,
+        liq_stream_monitor: Optional["LiquidationStreamMonitor"] = None,
+        ob_monitor: Optional["OrderBookMonitor"] = None,
+    ):
         self.zone_tracker = ZoneTracker(
             zone_size=settings.zone_size_usd,
             cooldown_minutes=settings.zone_cooldown_minutes,
@@ -150,6 +158,7 @@ class SignalEngine:
         self.order_flow_monitor = SpotOrderFlowMonitor()
         self.hyblock_monitor = HyblockMonitor()
         self.liq_stream_monitor: Optional[LiquidationStreamMonitor] = liq_stream_monitor
+        self.ob_monitor: Optional[OrderBookMonitor] = ob_monitor
         self._prev_price: Optional[float] = None
         self._first_break_zones: Dict[str, Dict] = {}
 
@@ -855,6 +864,156 @@ class SignalEngine:
         # ── Hyblock signals (MII, whale, OBI, CVD, OI, retail, PDL, liq bias) ─
         score += hyblock_score_delta
         _breakdown.append(f"hyblock({hyblock_score_delta:+.1f})")
+
+        # ── L2 order book: walls + imbalance corroboration ────────────────────
+        # Scoring is mode-aware:
+        #
+        # HA_TREND: wall BEHIND entry = floor/ceiling support; wall IN PATH = blocker.
+        #   Raw book imbalance should agree with Hyblock OBI (both use order book data
+        #   but OBI is smoothed/aggregated; raw imbalance is instantaneous).
+        #   Agreement reinforces; divergence warns that something has changed.
+        #
+        # WICK_FADE: wall AT/ABOVE entry (SHORT) or AT/BELOW (LONG) is the rejection
+        #   level we are fading — it IS the wick fade confirmation in order book terms.
+        #   The key divergence signal: Hyblock OBI still shows trend direction (BULLISH
+        #   for SHORT wick fade) but raw book imbalance has already flipped — this is
+        #   the classic "distribution top / accumulation bottom" fingerprint.
+        if self.ob_monitor is not None:
+            _ob = self.ob_monitor.get_live_state(current_price, signal.liq_target_price)
+            _ob_imb        = _ob["book_imbalance"]
+            _bid_wall_pct  = _ob["bid_wall_pct"]
+            _bid_wall_sz   = _ob["bid_wall_size_btc"]
+            _ask_wall_pct  = _ob["ask_wall_pct"]
+            _ask_wall_sz   = _ob["ask_wall_size_btc"]
+            _block_sz      = _ob["blocking_wall_size_btc"]
+            _ob_pts        = 0.0
+
+            if _wick_fade_mode:
+                # ── WICK_FADE order book scoring ──────────────────────────────
+                if candidate_direction == "SHORT":
+                    # Ask wall close above = the rejection ceiling we're fading
+                    if _ask_wall_sz > 0:
+                        if _ask_wall_pct <= 0.3 and _ask_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 10.0; _breakdown.append(f"ob_ask_wall@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+10)")
+                        elif _ask_wall_pct <= 0.3:
+                            _ob_pts += 6.0;  _breakdown.append(f"ob_ask_wall@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+6)")
+                        elif _ask_wall_pct <= 0.6 and _ask_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 6.0;  _breakdown.append(f"ob_ask_wall@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+6)")
+                        elif _ask_wall_pct <= 0.6:
+                            _ob_pts += 3.0;  _breakdown.append(f"ob_ask_wall@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+3)")
+                        elif _ask_wall_pct <= 1.0:
+                            _ob_pts += 1.0;  _breakdown.append(f"ob_ask_wall@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+1)")
+                    # Blocking bid wall below (in path to TP)
+                    if _block_sz >= LARGE_WALL_BTC:
+                        _ob_pts -= 8.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-8)")
+                    elif _block_sz >= MIN_WALL_BTC:
+                        _ob_pts -= 4.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-4)")
+                    # Raw imbalance: selling pressure at the high is ideal
+                    if _ob_imb < -0.20:
+                        _ob_pts += 5.0; _breakdown.append(f"ob_imb={_ob_imb:+.2f}(sell_pressure+5)")
+                    elif _ob_imb > 0.35:
+                        _ob_pts -= 5.0; _breakdown.append(f"ob_imb={_ob_imb:+.2f}(still_buying-5)")
+                    # OBI divergence: Hyblock OBI still bullish but raw book turning bearish
+                    # = distribution top fingerprint = ideal wick fade SHORT confirmation
+                    if obi_dir == "BULLISH" and _ob_imb < -0.20:
+                        _ob_pts += 5.0; _breakdown.append("ob_obi_div=top(+5)")
+                    elif obi_dir == "BEARISH" and _ob_imb < -0.20:
+                        _ob_pts += 2.0; _breakdown.append("ob_obi_agree=short(+2)")
+                    elif obi_dir == "BULLISH" and _ob_imb > 0.35:
+                        _ob_pts -= 3.0; _breakdown.append("ob_obi_agree=bull/no_top(-3)")
+
+                else:  # WICK_FADE LONG
+                    # Bid wall close below = the support floor we're bouncing from
+                    if _bid_wall_sz > 0:
+                        if _bid_wall_pct <= 0.3 and _bid_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 10.0; _breakdown.append(f"ob_bid_wall@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+10)")
+                        elif _bid_wall_pct <= 0.3:
+                            _ob_pts += 6.0;  _breakdown.append(f"ob_bid_wall@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+6)")
+                        elif _bid_wall_pct <= 0.6 and _bid_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 6.0;  _breakdown.append(f"ob_bid_wall@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+6)")
+                        elif _bid_wall_pct <= 0.6:
+                            _ob_pts += 3.0;  _breakdown.append(f"ob_bid_wall@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+3)")
+                        elif _bid_wall_pct <= 1.0:
+                            _ob_pts += 1.0;  _breakdown.append(f"ob_bid_wall@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+1)")
+                    # Blocking ask wall above (in path to TP)
+                    if _block_sz >= LARGE_WALL_BTC:
+                        _ob_pts -= 8.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-8)")
+                    elif _block_sz >= MIN_WALL_BTC:
+                        _ob_pts -= 4.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-4)")
+                    # Raw imbalance: buying pressure at the low is ideal
+                    if _ob_imb > 0.20:
+                        _ob_pts += 5.0; _breakdown.append(f"ob_imb={_ob_imb:+.2f}(buy_pressure+5)")
+                    elif _ob_imb < -0.35:
+                        _ob_pts -= 5.0; _breakdown.append(f"ob_imb={_ob_imb:+.2f}(still_selling-5)")
+                    # OBI divergence: Hyblock OBI still bearish but raw book turning bullish
+                    # = accumulation bottom fingerprint = ideal wick fade LONG confirmation
+                    if obi_dir == "BEARISH" and _ob_imb > 0.20:
+                        _ob_pts += 5.0; _breakdown.append("ob_obi_div=bottom(+5)")
+                    elif obi_dir == "BULLISH" and _ob_imb > 0.20:
+                        _ob_pts += 2.0; _breakdown.append("ob_obi_agree=bull(+2)")
+                    elif obi_dir == "BEARISH" and _ob_imb < -0.35:
+                        _ob_pts -= 3.0; _breakdown.append("ob_obi_agree=bear/no_bottom(-3)")
+
+            else:
+                # ── HA_TREND order book scoring ───────────────────────────────
+                if candidate_direction == "LONG":
+                    # Bid wall behind (below entry) = floor — if wrong, price bounces
+                    if _bid_wall_sz > 0:
+                        if _bid_wall_pct <= 0.5 and _bid_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 8.0; _breakdown.append(f"ob_floor@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+8)")
+                        elif _bid_wall_pct <= 0.5:
+                            _ob_pts += 4.0; _breakdown.append(f"ob_floor@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+4)")
+                        elif _bid_wall_pct <= 1.0 and _bid_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 4.0; _breakdown.append(f"ob_floor@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+4)")
+                        elif _bid_wall_pct <= 1.0:
+                            _ob_pts += 2.0; _breakdown.append(f"ob_floor@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+2)")
+                    # Ask wall blocking path to TP
+                    if _block_sz >= LARGE_WALL_BTC:
+                        _ob_pts -= 10.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-10)")
+                    elif _block_sz >= MIN_WALL_BTC:
+                        _ob_pts -= 5.0;  _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-5)")
+                    # OBI corroboration: raw imbalance vs Hyblock OBI agreement
+                    if _ob_imb > 0.35 and obi_dir == "BULLISH":
+                        _ob_pts += 6.0; _breakdown.append(f"ob_obi_corr=bull({_ob_imb:+.2f}+6)")
+                    elif _ob_imb > 0.20 and obi_dir == "BULLISH":
+                        _ob_pts += 3.0; _breakdown.append(f"ob_obi_corr=bull({_ob_imb:+.2f}+3)")
+                    elif _ob_imb < -0.20 and obi_dir == "BULLISH":
+                        _ob_pts -= 6.0; _breakdown.append(f"ob_obi_div=bull/imb_neg({_ob_imb:+.2f}-6)")
+                    elif _ob_imb > 0.35 and obi_dir == "NEUTRAL":
+                        _ob_pts += 3.0; _breakdown.append(f"ob_imb=bull_raw({_ob_imb:+.2f}+3)")
+                    elif _ob_imb < -0.35 and obi_dir == "NEUTRAL":
+                        _ob_pts -= 3.0; _breakdown.append(f"ob_imb=bear_raw({_ob_imb:+.2f}-3)")
+
+                else:  # HA_TREND SHORT
+                    # Ask wall behind (above entry) = ceiling — if wrong, price rejects
+                    if _ask_wall_sz > 0:
+                        if _ask_wall_pct <= 0.5 and _ask_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 8.0; _breakdown.append(f"ob_ceil@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+8)")
+                        elif _ask_wall_pct <= 0.5:
+                            _ob_pts += 4.0; _breakdown.append(f"ob_ceil@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+4)")
+                        elif _ask_wall_pct <= 1.0 and _ask_wall_sz >= LARGE_WALL_BTC:
+                            _ob_pts += 4.0; _breakdown.append(f"ob_ceil@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+4)")
+                        elif _ask_wall_pct <= 1.0:
+                            _ob_pts += 2.0; _breakdown.append(f"ob_ceil@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+2)")
+                    # Bid wall blocking path to TP
+                    if _block_sz >= LARGE_WALL_BTC:
+                        _ob_pts -= 10.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-10)")
+                    elif _block_sz >= MIN_WALL_BTC:
+                        _ob_pts -= 5.0;  _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-5)")
+                    # OBI corroboration
+                    if _ob_imb < -0.35 and obi_dir == "BEARISH":
+                        _ob_pts += 6.0; _breakdown.append(f"ob_obi_corr=bear({_ob_imb:+.2f}+6)")
+                    elif _ob_imb < -0.20 and obi_dir == "BEARISH":
+                        _ob_pts += 3.0; _breakdown.append(f"ob_obi_corr=bear({_ob_imb:+.2f}+3)")
+                    elif _ob_imb > 0.20 and obi_dir == "BEARISH":
+                        _ob_pts -= 6.0; _breakdown.append(f"ob_obi_div=bear/imb_pos({_ob_imb:+.2f}-6)")
+                    elif _ob_imb < -0.35 and obi_dir == "NEUTRAL":
+                        _ob_pts += 3.0; _breakdown.append(f"ob_imb=bear_raw({_ob_imb:+.2f}+3)")
+                    elif _ob_imb > 0.35 and obi_dir == "NEUTRAL":
+                        _ob_pts -= 3.0; _breakdown.append(f"ob_imb=bull_raw({_ob_imb:+.2f}-3)")
+
+            score += _ob_pts
+            signal.ob_state = _ob
 
         # ── Live liquidation cascade confirmation ─────────────────────────────
         if self.liq_stream_monitor is not None:
