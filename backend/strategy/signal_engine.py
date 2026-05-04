@@ -665,7 +665,8 @@ class SignalEngine:
             logger.warning(f"Hyblock scoring failed: {e}")
 
         if hyblock_block:
-            signal.block_reasons.append("Hyblock: CRITICAL cascade risk — entry blocked")
+            _block_reason = next((w for w in hyblock_warnings if "blocked" in w.lower()), "Hyblock: cascade risk — entry blocked")
+            signal.block_reasons.append(f"Hyblock: {_block_reason}")
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
             signal.block_stage = "HYBLOCK_BLOCK"
