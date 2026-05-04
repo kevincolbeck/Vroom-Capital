@@ -679,6 +679,18 @@ class SignalEngine:
         # TP price: prefers exact level price (precision exit), falls back to
         # heatmap midpoint. Both confirming = highest conviction entry.
         # Wick fades bypass this: the 24h extreme + Hyblock OBI is the entry signal.
+        #
+        # High-conviction override: when micro votes strongly agree (margin ≥ 2)
+        # AND cascade is aligned AND risk is HIGH/CRITICAL, allow entry without a
+        # qualifying cluster at 0.5x size. The liquidation wave IS the catalyst —
+        # clusters are the target, not the prerequisite.
+        _micro_margin = abs(_micro_long - _micro_short)
+        _high_conv_liq_override = (
+            _micro_margin >= 2
+            and cascade_dir == candidate_direction
+            and casc_risk in ("HIGH", "CRITICAL")
+        )
+        _liq_gate_bypassed = False
         if not _wick_fade_mode:
             _min_btc    = settings.min_liq_cluster_btc
             liq_clusters = hyblock_data.get("liq_clusters", {})
@@ -694,13 +706,26 @@ class SignalEngine:
                 _hm_pct   = liq_clusters.get("above_pct")
 
                 if not _lvl_ok:
-                    _detail = f"levels={_lvl_size:.0f}BTC@{_lvl_pct}% (need >={_min_btc:.0f} BTC)"
-                    signal.block_reasons.append(f"Liq cluster gate: no qualifying SHORT cluster above — {_detail}")
-                    logger.info(f"[LONG] BLOCKED — liq cluster gate: {_detail}")
-                    signal.direction = candidate_direction
-                    signal.strength = "BLOCKED"
-                    signal.block_stage = "LIQ_GATE"
-                    return signal
+                    if _high_conv_liq_override:
+                        _liq_gate_bypassed = True
+                        logger.info(
+                            f"[LONG] Liq gate bypassed — high conviction override "
+                            f"(margin={_micro_margin} casc={cascade_dir} risk={casc_risk} "
+                            f"levels={_lvl_size:.0f}BTC) — 0.5x size"
+                        )
+                        signal.warnings.append(
+                            f"Liq gate: no cluster but high-conviction override "
+                            f"(votes={_micro_long}L/{_micro_short}S casc={cascade_dir} "
+                            f"risk={casc_risk}) — 0.5x size"
+                        )
+                    else:
+                        _detail = f"levels={_lvl_size:.0f}BTC@{_lvl_pct}% (need >={_min_btc:.0f} BTC)"
+                        signal.block_reasons.append(f"Liq cluster gate: no qualifying SHORT cluster above — {_detail}")
+                        logger.info(f"[LONG] BLOCKED — liq cluster gate: {_detail}")
+                        signal.direction = candidate_direction
+                        signal.strength = "BLOCKED"
+                        signal.block_stage = "LIQ_GATE"
+                        return signal
 
                 signal.liq_target_price = _lvl_price
                 _hm_note = f" heatmap={_hm_size:.0f}BTC@{_hm_pct}%" if _hm_pct is not None else ""
@@ -731,13 +756,26 @@ class SignalEngine:
                 _hm_pct   = liq_clusters.get("below_pct")
 
                 if not _lvl_ok:
-                    _detail = f"levels={_lvl_size:.0f}BTC@{_lvl_pct}% (need >={_min_btc:.0f} BTC)"
-                    signal.block_reasons.append(f"Liq cluster gate: no qualifying LONG cluster below — {_detail}")
-                    logger.info(f"[SHORT] BLOCKED — liq cluster gate: {_detail}")
-                    signal.direction = candidate_direction
-                    signal.strength = "BLOCKED"
-                    signal.block_stage = "LIQ_GATE"
-                    return signal
+                    if _high_conv_liq_override:
+                        _liq_gate_bypassed = True
+                        logger.info(
+                            f"[SHORT] Liq gate bypassed — high conviction override "
+                            f"(margin={_micro_margin} casc={cascade_dir} risk={casc_risk} "
+                            f"levels={_lvl_size:.0f}BTC) — 0.5x size"
+                        )
+                        signal.warnings.append(
+                            f"Liq gate: no cluster but high-conviction override "
+                            f"(votes={_micro_long}L/{_micro_short}S casc={cascade_dir} "
+                            f"risk={casc_risk}) — 0.5x size"
+                        )
+                    else:
+                        _detail = f"levels={_lvl_size:.0f}BTC@{_lvl_pct}% (need >={_min_btc:.0f} BTC)"
+                        signal.block_reasons.append(f"Liq cluster gate: no qualifying LONG cluster below — {_detail}")
+                        logger.info(f"[SHORT] BLOCKED — liq cluster gate: {_detail}")
+                        signal.direction = candidate_direction
+                        signal.strength = "BLOCKED"
+                        signal.block_stage = "LIQ_GATE"
+                        return signal
 
                 signal.liq_target_price = _lvl_price
                 _hm_note = f" heatmap={_hm_size:.0f}BTC@{_hm_pct}%" if _hm_pct is not None else ""
@@ -839,20 +877,42 @@ class SignalEngine:
             f"tc_6h={'align' if _6h_aligned else 'opp'}/{signal.ha_6h_body_pct:.0f}%/{'conf' if _prev_matches else 'no'}"
         )
 
-        _1h_target = "GREEN" if candidate_direction == "LONG" else "RED"
-        _last4_1h  = ha_1h[-4:] if len(ha_1h) >= 4 else ha_1h
+        _1h_target  = "GREEN" if candidate_direction == "LONG" else "RED"
+        _last4_1h   = ha_1h[-4:] if len(ha_1h) >= 4 else ha_1h
         _aligned_1h = sum(1 for c in _last4_1h if c["color"] == _1h_target)
         signal.ha_1h_aligned_count = _aligned_1h
         _n_1h = len(_last4_1h)
-        if _aligned_1h == _n_1h:
-            _tc += 8.0
-        elif _aligned_1h >= _n_1h - 1:
-            _tc += 4.0
-        elif _aligned_1h <= 1 and _n_1h >= 3:
-            _tc -= 8.0
-        elif _aligned_1h == 0:
+
+        # Consecutive aligned streak from the most recent candle backward.
+        # Sequence matters more than raw count: a fresh flip scores highest,
+        # 4/4 all-aligned signals exhaustion (reversal indicator from signal analysis).
+        _1h_consec = 0
+        for _c1h in reversed(_last4_1h):
+            if _c1h["color"] == _1h_target:
+                _1h_consec += 1
+            else:
+                break
+
+        if not _last4_1h or _last4_1h[-1]["color"] != _1h_target:
+            # Current candle is opposing — momentum is against us
+            if _aligned_1h == 0:
+                _tc -= 8.0
+                _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}(-8)")
+            else:
+                _tc -= 4.0
+                _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}(-4)")
+        elif _1h_consec >= _n_1h and _n_1h >= 3:
+            # All candles aligned = exhaustion/overextension (data: 4/4 predicts reversal)
             _tc -= 4.0
-        _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}")
+            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/exhaust(-4)")
+        elif _1h_consec == 1:
+            # Current candle just flipped — fresh direction change, optimal entry timing
+            _tc += 7.0
+            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/flip(+7)")
+        else:
+            # 2–(n-1) consecutive — building momentum after the flip
+            _tc += 4.0
+            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/momentum(+4)")
 
         if ha_3m:
             _3m_align = (
@@ -1348,10 +1408,12 @@ class SignalEngine:
         else:
             funding_modifier = funding_analysis.get("position_modifier", 1.0)
 
+        _liq_override_modifier = 0.5 if _liq_gate_bypassed else 1.0
         combined_modifier = (
             funding_modifier
             * macro_context.get("position_size_modifier", 1.0)
             * _regime_modifier
+            * _liq_override_modifier
         )
         signal.position_size_modifier = max(0.25, combined_modifier)
 
