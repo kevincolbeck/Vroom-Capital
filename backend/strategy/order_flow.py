@@ -1,6 +1,6 @@
 """
 Spot Order Flow Monitor
-Tracks real BTC buy/sell pressure across Binance, Coinbase, and Kraken spot markets.
+Tracks real BTC buy/sell pressure across Coinbase and Kraken spot markets.
 
 Spot order flow reflects real money — institutions and whales placing actual buy/sell walls.
 Futures reflects speculation and leverage. When they diverge, the spot side usually wins.
@@ -27,7 +27,6 @@ class SpotOrderFlowMonitor:
     WALL_THRESHOLD_USD  = 5_000_000    # $5M minimum to show as a wall (display only)
     WHALE_THRESHOLD_USD = 20_000_000   # $20M+ = whale wall label
 
-    BINANCE_URL  = "https://api.binance.com"
     COINBASE_URL = "https://api.exchange.coinbase.com"
     KRAKEN_URL   = "https://api.kraken.com"
 
@@ -40,36 +39,6 @@ class SpotOrderFlowMonitor:
     # ─────────────────────────────────────────────────────────────────
     # Data Fetching
     # ─────────────────────────────────────────────────────────────────
-
-    async def _fetch_binance_depth(self, client: httpx.AsyncClient) -> Optional[Dict]:
-        try:
-            resp = await client.get(
-                f"{self.BINANCE_URL}/api/v3/depth",
-                params={"symbol": "BTCUSDT", "limit": 1000},
-            )
-            data = resp.json()
-            return {
-                "exchange": "binance",
-                "bids": [[float(p), float(q)] for p, q in data.get("bids", [])],
-                "asks": [[float(p), float(q)] for p, q in data.get("asks", [])],
-            }
-        except Exception as e:
-            logger.debug(f"Binance spot depth failed: {e}")
-            return None
-
-    async def _fetch_binance_spot_price(self, client: httpx.AsyncClient) -> Optional[float]:
-        try:
-            resp = await client.get(
-                f"{self.BINANCE_URL}/api/v3/ticker/price",
-                params={"symbol": "BTCUSDT"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            raw = data.get("price") if isinstance(data, dict) else None
-            return float(raw) if raw is not None else None
-        except Exception as e:
-            logger.debug(f"Binance spot price failed: {e}")
-            return None
 
     async def _fetch_coinbase_depth(self, client: httpx.AsyncClient) -> Optional[Dict]:
         try:
@@ -230,17 +199,12 @@ class SpotOrderFlowMonitor:
         try:
             async with httpx.AsyncClient(timeout=6.0) as client:
                 results = await asyncio.gather(
-                    self._fetch_binance_depth(client),
                     self._fetch_coinbase_depth(client),
                     self._fetch_kraken_depth(client),
-                    self._fetch_binance_spot_price(client),
                     return_exceptions=True,
                 )
 
-            depth_results = results[:3]
-            spot_price_result = results[3]
-
-            books     = [r for r in depth_results if r and not isinstance(r, Exception)]
+            books     = [r for r in results if r and not isinstance(r, Exception)]
             exchanges = [b["exchange"] for b in books]
             pressure  = self._compute_pressure(books, current_price)
             walls     = self._find_walls(books, current_price)
@@ -248,15 +212,13 @@ class SpotOrderFlowMonitor:
 
             # Basis = (perpetual_price - spot_price) / spot_price * 100
             # Positive = futures at premium; Negative = futures at discount
-            spot_price = spot_price_result if isinstance(spot_price_result, float) else None
-            # Fallback: derive spot mid from Coinbase depth if Binance price unavailable
-            if spot_price is None:
-                for book in books:
-                    if book["exchange"] == "coinbase" and book.get("bids") and book.get("asks"):
-                        best_bid = book["bids"][0][0]
-                        best_ask = book["asks"][0][0]
-                        spot_price = (best_bid + best_ask) / 2.0
-                        break
+            spot_price = None
+            for book in books:
+                if book["exchange"] == "coinbase" and book.get("bids") and book.get("asks"):
+                    best_bid = book["bids"][0][0]
+                    best_ask = book["asks"][0][0]
+                    spot_price = (best_bid + best_ask) / 2.0
+                    break
             basis_pct = round((current_price - spot_price) / spot_price * 100, 4) if spot_price else 0.0
 
             result = {
