@@ -492,33 +492,76 @@ class SignalEngine:
         except Exception as e:
             logger.warning(f"Hyblock fetch failed: {e}")
 
-        # ─── Step 8.75: Direction from completed 6h HA (cascade = scoring only) ──
-        # 6h HA completed candle is PRIMARY direction (WarriorAI cascade scalp model).
-        # Cascade direction never overrides HA — it is scored as alignment/conflict
-        # in Step 9. The only tiebreaker is cascade when HA is a strict 1v1 split.
-        # MII retained for logging context only.
+        # ─── Step 8.75: Direction from microstructure votes (HA = fallback only) ──
+        # OBI + cascade + whale + taker flow drive direction.
+        # HA votes are used only when microstructure is split/absent.
         mii = hyblock_data.get("market_imbalance_index", 0.0)
         _liq_levels = hyblock_data.get("liq_levels", {})
         cascade_dir = _liq_levels.get("cascade_direction")
+        obi_dir     = hyblock_data.get("obi_slope_direction", "NEUTRAL")
+        whale       = hyblock_data.get("whale_sentiment", "NEUTRAL")
+        casc_risk   = hyblock_data.get("cascade_risk", "LOW")
 
-        if _green_votes == _red_votes:
-            # HA tied — use cascade as tiebreaker, or block if no cascade
-            if cascade_dir:
+        # Gather taker buy ratio for direction vote (live, non-blocking)
+        _tbr_5m_dir = 0.5
+        if self.trade_flow_monitor is not None:
+            _tf_dir_tmp = self.trade_flow_monitor.get_live_state()
+            _tbr_5m_dir = _tf_dir_tmp.get("taker_buy_ratio_5m", 0.5)
+
+        # Live cascade direction vote
+        _live_casc_dir_tmp = None
+        if self.liq_stream_monitor is not None:
+            _ls_dir_tmp = self.liq_stream_monitor.get_live_state()
+            if _ls_dir_tmp.get("cascade_live"):
+                _live_casc_dir_tmp = _ls_dir_tmp.get("cascade_direction")
+
+        _micro_long = (
+            (1 if obi_dir == "BULLISH" else 0) +
+            (1 if cascade_dir == "LONG" else 0) +
+            (1 if whale == "BULLISH" else 0) +
+            (1 if _tbr_5m_dir > 0.60 else 0) +
+            (2 if _live_casc_dir_tmp == "LONG" else 0)
+        )
+        _micro_short = (
+            (1 if obi_dir == "BEARISH" else 0) +
+            (1 if cascade_dir == "SHORT" else 0) +
+            (1 if whale == "BEARISH" else 0) +
+            (1 if _tbr_5m_dir < 0.40 else 0) +
+            (2 if _live_casc_dir_tmp == "SHORT" else 0)
+        )
+
+        if _micro_long > _micro_short:
+            candidate_direction = "LONG"
+            logger.info(
+                f"[LONG] Micro votes: {_micro_long}L/{_micro_short}S "
+                f"(OBI={obi_dir} casc={cascade_dir} whale={whale} tbr={_tbr_5m_dir:.2f} live={_live_casc_dir_tmp})"
+            )
+        elif _micro_short > _micro_long:
+            candidate_direction = "SHORT"
+            logger.info(
+                f"[SHORT] Micro votes: {_micro_short}S/{_micro_long}L "
+                f"(OBI={obi_dir} casc={cascade_dir} whale={whale} tbr={_tbr_5m_dir:.2f} live={_live_casc_dir_tmp})"
+            )
+        else:
+            # Micro tied — fall back to HA votes
+            if _green_votes > _red_votes:
+                candidate_direction = "LONG"
+            elif _red_votes > _green_votes:
+                candidate_direction = "SHORT"
+            elif cascade_dir:
                 candidate_direction = cascade_dir
-                logger.info(f"[{candidate_direction}] HA split — cascade tiebreaker")
             else:
                 signal.block_reasons.append(
-                    f"HA split with no cascade tiebreaker: "
-                    f"3m={signal.ha_3m_color} 1h={signal.ha_1h_color} 6h={signal.ha_6h_color}"
+                    f"Micro tied ({_micro_long}L/{_micro_short}S) and HA tied "
+                    f"({_green_votes}G/{_red_votes}R) — no direction"
                 )
                 signal.direction = candidate_direction
                 signal.strength = "BLOCKED"
                 signal.block_stage = "HYBLOCK_BLOCK"
                 return signal
-        else:
             logger.info(
-                f"[{candidate_direction}] HA primary direction (MII={mii:+.2f}) | "
-                f"cascade={'aligned' if cascade_dir == candidate_direction else ('opposing' if cascade_dir else 'none')}"
+                f"[{candidate_direction}] Micro tied ({_micro_long}L/{_micro_short}S) — "
+                f"HA fallback ({_green_votes}G/{_red_votes}R | MII={mii:+.2f})"
             )
 
         # Store precision signal state on the trade signal
@@ -530,48 +573,40 @@ class SignalEngine:
         signal.volume_ratio         = hyblock_data.get("volume_ratio", 0.0) or 0.0
         signal.buy_sell_count_ratio = hyblock_data.get("buy_sell_count_ratio", 0.0) or 0.0
 
-        # ─── Step 8.76: Range extreme wick fade detection ─────────────────────
-        # When price is at the 24h range extreme AND Hyblock OBI strongly opposes
-        # the 6h HA direction, override to a counter-trend wick fade scalp.
-        # This captures shorting upper wicks at 24h resistance (and vice versa for longs).
-        obi_dir   = hyblock_data.get("obi_slope_direction", "NEUTRAL")
-        whale     = hyblock_data.get("whale_sentiment", "NEUTRAL")
-        casc_risk = hyblock_data.get("cascade_risk", "LOW")
-
+        # ─── Step 8.76: Range extreme + counter-trend detection ───────────────
+        # Records whether price is at a 24h extreme with microstructure opposing
+        # the 6h HA trend. No longer a hard mode switch — just sets _wick_fade_mode
+        # for DB tracking and scoring context. No ha_1h_color gate: microstructure
+        # votes (Step 8.75) already determined direction; this is informational.
         _24h_candles = candles_1h[-24:] if len(candles_1h) >= 24 else candles_1h
         _24h_high = max((c.get("high", 0) for c in _24h_candles), default=0.0)
         _24h_low  = min((c.get("low", float("inf")) for c in _24h_candles), default=current_price)
         _dist_from_24h_high_pct = (_24h_high - current_price) / _24h_high * 100 if _24h_high > 0 else 999.0
         _dist_from_24h_low_pct  = (current_price - _24h_low)  / _24h_low  * 100 if _24h_low  > 0 else 999.0
 
-        _wick_fade_mode = False
         _range_prox = settings.range_extreme_proximity_pct
 
-        if (
-            _dist_from_24h_high_pct <= _range_prox
-            and obi_dir == "BEARISH"
-            and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
-            and signal.ha_6h_color == "GREEN"   # higher TF confirms uptrend that created the wick
-            and signal.ha_1h_color == "RED"     # lower TF forming candle has started reversing
-        ):
-            _wick_fade_mode = True
-            candidate_direction = "SHORT"
-            logger.info(
-                f"[SHORT] WICK FADE — price {_dist_from_24h_high_pct:.2f}% from 24h high "
-                f"${_24h_high:,.0f} | 6h=GREEN 1h=RED | OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
+        _wick_fade_mode = (
+            (
+                candidate_direction == "SHORT"
+                and signal.ha_6h_color == "GREEN"
+                and _dist_from_24h_high_pct <= _range_prox
+                and obi_dir == "BEARISH"
+            ) or (
+                candidate_direction == "LONG"
+                and signal.ha_6h_color == "RED"
+                and _dist_from_24h_low_pct <= _range_prox
+                and obi_dir == "BULLISH"
             )
-        elif (
-            _dist_from_24h_low_pct <= _range_prox
-            and obi_dir == "BULLISH"
-            and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
-            and signal.ha_6h_color == "RED"     # higher TF confirms downtrend that created the wick
-            and signal.ha_1h_color == "GREEN"   # lower TF forming candle has started reversing
-        ):
-            _wick_fade_mode = True
-            candidate_direction = "LONG"
+        )
+        if _wick_fade_mode:
+            _wf_dist = _dist_from_24h_high_pct if candidate_direction == "SHORT" else _dist_from_24h_low_pct
+            _wf_ref  = _24h_high if candidate_direction == "SHORT" else _24h_low
             logger.info(
-                f"[LONG] WICK FADE — price {_dist_from_24h_low_pct:.2f}% from 24h low "
-                f"${_24h_low:,.0f} | 6h=RED 1h=GREEN | OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
+                f"[{candidate_direction}] COUNTER-TREND EXTREME — "
+                f"{_wf_dist:.2f}% from 24h {'high' if candidate_direction == 'SHORT' else 'low'} "
+                f"${_wf_ref:,.0f} | 6h={'GREEN' if candidate_direction == 'SHORT' else 'RED'} | "
+                f"OBI={obi_dir} | Whale={whale} | CascRisk={casc_risk}"
             )
 
         signal.wick_fade_mode = _wick_fade_mode
@@ -711,120 +746,98 @@ class SignalEngine:
                     return signal
 
         # ─── Step 9: Calculate confidence score ───────────────────────────
-        # Structure matches WarriorAI's visible breakdown:
-        #   6h HA body strength  (0-30)
-        #   6h HA trend confirm  (0-15)
-        #   4x 1h momentum count (0-40)
-        # Plus our precision scalping layer:
-        #   Cascade proximity + size  (1-8, tiebreaker)
-        #   Hyblock order flow        (variable, primary +/- differentiator)
-        #   Funding, zone, macro      (small bonuses, max +5 each)
+        # Architecture: microstructure-first.
+        #   Primary:   hyblock_score_delta (OBI, MII, whale, CVD, cascade, retail,
+        #              liq clusters, OI, PDH/PDL — comprehensive real-time data)
+        #              + live_cascade, taker_flow, OB walls, liq_prox, funding, macro
+        #   Secondary: TREND CONTEXT composite (HA candles) — max +25, floor -20.
+        #              Cannot drive a trade alone; confirms/attenuates primary signals.
         # Threshold: 80
         score = 0.0
         _breakdown: list[str] = []
 
-        if _wick_fade_mode:
-            # ── WICK FADE scoring (replaces HA components) ───────────────────
-            # Entry is driven by 24h range extreme + Hyblock OBI, not HA trend.
-            # 24h proximity replaces 6h body strength (max 30)
-            _wf_prox = _dist_from_24h_high_pct if candidate_direction == "SHORT" else _dist_from_24h_low_pct
-            if _wf_prox <= 0.3:
-                _body_pts = 30.0
-            elif _wf_prox <= 0.7:
-                _body_pts = 20.0
-            elif _wf_prox <= 1.5:
-                _body_pts = 10.0
-            else:
-                _body_pts = 0.0
-            score += _body_pts
-            _breakdown.append(f"24h_prox={_wf_prox:.2f}%({_body_pts:+.0f})")
+        # Whether this trade is counter-trend relative to the 6h HA direction.
+        # Used by OB, taker-flow, and regime scoring in place of _wick_fade_mode.
+        _counter_trend = (
+            (candidate_direction == "SHORT" and signal.ha_6h_color == "GREEN") or
+            (candidate_direction == "LONG"  and signal.ha_6h_color == "RED")
+        )
 
-            # Whale agreement replaces 6h trend confirm (max 15)
-            _whale_target = "BEARISH" if candidate_direction == "SHORT" else "BULLISH"
-            if whale == _whale_target:
-                _trend_pts = 15.0
-            elif whale == "NEUTRAL":
-                _trend_pts = 5.0
-            else:
-                _trend_pts = 0.0
-            score += _trend_pts
-            _breakdown.append(f"whale={whale}({_trend_pts:+.0f})")
+        # ── TREND CONTEXT composite (max +25, floor -20) ──────────────────────
+        # All HA/candle data collapsed into one capped composite score.
+        _tc = 0.0
 
-            # Cascade risk replaces 1h momentum (max 40)
-            _risk_map = {"CRITICAL": 40, "HIGH": 30, "MEDIUM": 20, "LOW": 5}
-            _momentum_pts = float(_risk_map.get(casc_risk, 5))
-            score += _momentum_pts
-            signal.ha_1h_aligned_count = 0  # N/A for wick fade
-            _breakdown.append(f"casc_risk={casc_risk}({_momentum_pts:+.0f})")
-
-            # 3m HA reversal confirmation (entry timing)
-            # All three TFs now tell the story: 6h extended → 1h reversed (hard gate) → 3m reversal = ideal timing
-            _3m_reversed = (
-                (candidate_direction == "SHORT" and signal.ha_3m_color == "RED") or
-                (candidate_direction == "LONG"  and signal.ha_3m_color == "GREEN")
-            )
-            _3m_still_trend = (
-                (candidate_direction == "SHORT" and signal.ha_3m_color == "GREEN") or
-                (candidate_direction == "LONG"  and signal.ha_3m_color == "RED")
-            )
-            if _3m_reversed:
-                _3m_pts = 10.0
-            elif _3m_still_trend:
-                _3m_pts = -5.0
-            else:
-                _3m_pts = 0.0
-            score += _3m_pts
-            _breakdown.append(f"3m_reversal={'yes' if _3m_reversed else ('no' if _3m_still_trend else 'neutral')}({_3m_pts:+.0f})")
-
+        _6h_aligned = (
+            (candidate_direction == "LONG"  and signal.ha_6h_color == "GREEN") or
+            (candidate_direction == "SHORT" and signal.ha_6h_color == "RED")
+        )
+        _prev_matches = (
+            signal.ha_prev_6h_color == signal.ha_6h_color
+            and signal.ha_6h_color != "NEUTRAL"
+        )
+        if _6h_aligned:
+            _tc += 8.0
+            if signal.ha_6h_body_pct >= 20.0:
+                _tc += 5.0
+            if _prev_matches:
+                _tc += 3.0
         else:
-            # ── 6h HA body strength (max 30, direction-aware) ─────────────────
-            _body_pct = signal.ha_6h_body_pct
-            _6h_aligned = (
-                (candidate_direction == "LONG"  and signal.ha_6h_color == "GREEN") or
-                (candidate_direction == "SHORT" and signal.ha_6h_color == "RED")
-            )
-            if _6h_aligned:
-                if _body_pct >= 20.0:
-                    _body_pts = 30.0
-                elif _body_pct >= 10.0:
-                    _body_pts = 15.0
-                else:
-                    _body_pts = 0.0
-            else:
-                if _body_pct >= 20.0:
-                    _body_pts = -20.0
-                elif _body_pct >= 10.0:
-                    _body_pts = -10.0
-                else:
-                    _body_pts = -3.0
-            score += _body_pts
-            _breakdown.append(f"6h_body={_body_pct:.1f}%/{'aligned' if _6h_aligned else 'opposing'}({_body_pts:+.0f})")
+            _tc -= 8.0
+            if signal.ha_6h_body_pct >= 20.0:
+                _tc -= 3.0
+        _breakdown.append(
+            f"tc_6h={'align' if _6h_aligned else 'opp'}/{signal.ha_6h_body_pct:.0f}%/{'conf' if _prev_matches else 'no'}"
+        )
 
-            # ── 6h HA trend confirm (max 15, direction-aware) ─────────────────
-            _prev_matches = (
-                signal.ha_prev_6h_color == signal.ha_6h_color
-                and signal.ha_6h_color != "NEUTRAL"
-            )
-            if _6h_aligned and _prev_matches:
-                _trend_pts = 15.0
-            elif not _6h_aligned:
-                _trend_pts = -10.0 if _prev_matches else -5.0
-            else:
-                _trend_pts = 0.0
-            score += _trend_pts
-            _breakdown.append(f"6h_confirm={'YES' if _prev_matches else 'NO'}/{'aligned' if _6h_aligned else 'opposing'}({_trend_pts:+.0f})")
+        _1h_target = "GREEN" if candidate_direction == "LONG" else "RED"
+        _last4_1h  = ha_1h[-4:] if len(ha_1h) >= 4 else ha_1h
+        _aligned_1h = sum(1 for c in _last4_1h if c["color"] == _1h_target)
+        signal.ha_1h_aligned_count = _aligned_1h
+        _n_1h = len(_last4_1h)
+        if _aligned_1h == _n_1h:
+            _tc += 8.0
+        elif _aligned_1h >= _n_1h - 1:
+            _tc += 4.0
+        elif _aligned_1h <= 1 and _n_1h >= 3:
+            _tc -= 8.0
+        elif _aligned_1h == 0:
+            _tc -= 4.0
+        _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}")
 
-            # ── 4x 1h HA momentum count (max 40, symmetric) ──────────────────
-            # Opposing candles penalize: 4/4 aligned=+40, 2/4=0, 0/4=-40.
-            _1h_target = "GREEN" if candidate_direction == "LONG" else "RED"
-            _last4_1h = ha_1h[-4:] if len(ha_1h) >= 4 else ha_1h
-            _aligned = sum(1 for c in _last4_1h if c["color"] == _1h_target)
-            signal.ha_1h_aligned_count = _aligned
-            _n = len(_last4_1h)
-            _net = _aligned - (_n - _aligned)  # range -n to +n
-            _momentum_pts = (_net / _n) * 40.0 if _n > 0 else 0.0
-            score += _momentum_pts
-            _breakdown.append(f"1h_momentum={_aligned}/{_n}({_momentum_pts:+.0f})")
+        if ha_3m:
+            _3m_align = (
+                (candidate_direction == "LONG"  and signal.ha_3m_color == "GREEN") or
+                (candidate_direction == "SHORT" and signal.ha_3m_color == "RED")
+            )
+            _3m_opp = (
+                (candidate_direction == "LONG"  and signal.ha_3m_color == "RED") or
+                (candidate_direction == "SHORT" and signal.ha_3m_color == "GREEN")
+            )
+            if _3m_align:
+                _tc += 4.0
+            elif _3m_opp:
+                _tc -= 3.0
+
+            # 3m burst entry timing (small bonus inside composite)
+            _last3_3m  = ha_3m[-3:] if len(ha_3m) >= 3 else ha_3m
+            _3m_color_tgt = "GREEN" if candidate_direction == "LONG" else "RED"
+            _3m_aligned_cnt = sum(1 for c in _last3_3m if c["color"] == _3m_color_tgt)
+            _3m_bodies = [c.get("body", 0.0) for c in _last3_3m]
+            _3m_expanding = len(_3m_bodies) >= 2 and _3m_bodies[-1] > _3m_bodies[0]
+            signal.ha_3m_aligned_count = _3m_aligned_cnt
+            signal.ha_3m_expanding     = _3m_expanding
+            if _3m_aligned_cnt == len(_last3_3m) and _3m_expanding:
+                _tc += 3.0
+            elif _3m_aligned_cnt == len(_last3_3m):
+                _tc += 1.0
+            _breakdown.append(
+                f"tc_3m={'align' if _3m_align else ('opp' if _3m_opp else 'neut')}/"
+                f"{_3m_aligned_cnt}/{len(_last3_3m)}/{'exp' if _3m_expanding else 'flat'}"
+            )
+
+        _tc = min(25.0, max(-20.0, _tc))
+        score += _tc
+        _breakdown.append(f"trend_ctx={_tc:+.0f}")
 
         # ── Liq cascade level proximity + size bonus ──────────────────────────
         # Small precision bonus — already a hard gate above, so just a tiebreaker here.
@@ -860,7 +873,7 @@ class SignalEngine:
         else:
             _breakdown.append("cascade=none(+0)")
 
-        # ── Cascade direction alignment (HA vs cascade direction) ─────────────
+        # ── Cascade direction alignment ────────────────────────────────────────
         if cascade_dir:
             if cascade_dir == candidate_direction:
                 score += 7.0
@@ -869,10 +882,26 @@ class SignalEngine:
                 score -= 6.0
                 _breakdown.append(f"casc_align=NO(-6)")
 
-        # ── Gap 2: 3m price velocity toward liq target ────────────────────────
-        # Checks if recent 3m price action is moving TOWARD the liq cluster.
-        # A cascade entry benefits most when momentum is already pointing at the target.
-        if not _wick_fade_mode and candles_3m and len(candles_3m) >= 3 and signal.liq_target_price:
+        # ── 24h range extreme bonus ────────────────────────────────────────────
+        # Bonus when direction + OBI agree at the 24h high/low extreme.
+        # Counter-trend trades benefit most; trend entries at the extreme also score.
+        if candidate_direction == "SHORT" and _dist_from_24h_high_pct <= _range_prox and obi_dir == "BEARISH":
+            _ext_pts = 15.0 if _dist_from_24h_high_pct <= 0.3 else (10.0 if _dist_from_24h_high_pct <= 0.7 else 7.0)
+            score += _ext_pts
+            _breakdown.append(f"24h_top={_dist_from_24h_high_pct:.2f}%(+{_ext_pts:.0f})")
+        elif candidate_direction == "LONG" and _dist_from_24h_low_pct <= _range_prox and obi_dir == "BULLISH":
+            _ext_pts = 15.0 if _dist_from_24h_low_pct <= 0.3 else (10.0 if _dist_from_24h_low_pct <= 0.7 else 7.0)
+            score += _ext_pts
+            _breakdown.append(f"24h_bottom={_dist_from_24h_low_pct:.2f}%(+{_ext_pts:.0f})")
+        elif candidate_direction == "LONG" and _dist_from_24h_high_pct <= _range_prox and obi_dir == "BEARISH":
+            score -= 10.0
+            _breakdown.append(f"24h_top_vs_long(-10)")
+        elif candidate_direction == "SHORT" and _dist_from_24h_low_pct <= _range_prox and obi_dir == "BULLISH":
+            score -= 10.0
+            _breakdown.append(f"24h_bottom_vs_short(-10)")
+
+        # ── 3m price velocity toward liq target ──────────────────────────────
+        if candles_3m and len(candles_3m) >= 3 and signal.liq_target_price:
             _recent_3m = candles_3m[-5:]
             _closes_3m = [c.get("close", 0.0) for c in _recent_3m if c.get("close", 0.0) > 0]
             if len(_closes_3m) >= 2:
@@ -894,32 +923,6 @@ class SignalEngine:
                     _breakdown.append(f"vel=away({_vel_pts:+.0f})")
             else:
                 _breakdown.append("vel=n/a(+0)")
-
-        # ── Gap 3: 3m HA momentum burst (fine-grain entry timing) ─────────────
-        # Checks last 3 3m HA candles for directional alignment and expanding bodies.
-        # All aligned + body expanding = burst is starting → ideal entry timing.
-        # Keeps 6h HA as direction filter; 3m burst is the trigger confirmation.
-        if not _wick_fade_mode and ha_3m and len(ha_3m) >= 2:
-            _3m_target = "GREEN" if candidate_direction == "LONG" else "RED"
-            _last3_3m = ha_3m[-3:] if len(ha_3m) >= 3 else ha_3m
-            _3m_aligned = sum(1 for c in _last3_3m if c["color"] == _3m_target)
-            _3m_bodies = [c.get("body", 0.0) for c in _last3_3m]
-            _3m_expanding = len(_3m_bodies) >= 2 and _3m_bodies[-1] > _3m_bodies[0]
-            _3m_n = len(_last3_3m)
-            signal.ha_3m_aligned_count = _3m_aligned
-            signal.ha_3m_expanding = _3m_expanding
-            if _3m_aligned == _3m_n and _3m_expanding:
-                _3m_pts = 8.0   # full burst: all candles aligned + body expanding
-            elif _3m_aligned == _3m_n:
-                _3m_pts = 5.0   # aligned but not yet expanding
-            elif _3m_aligned >= 2 and _3m_n >= 3:
-                _3m_pts = 2.0   # majority aligned
-            else:
-                _3m_pts = -3.0  # misaligned — contra-momentum entry
-            score += _3m_pts
-            _breakdown.append(
-                f"3m_burst={_3m_aligned}/{_3m_n}/{'expand' if _3m_expanding else 'flat'}({_3m_pts:+.0f})"
-            )
 
         # ── Zone position bonus ───────────────────────────────────────────────
         if (candidate_direction == "SHORT" and zone_position == "TOP"):
@@ -1029,7 +1032,7 @@ class SignalEngine:
             _block_sz      = _ob["blocking_wall_size_btc"]
             _ob_pts        = 0.0
 
-            if _wick_fade_mode:
+            if _counter_trend:
                 # ── WICK_FADE order book scoring ──────────────────────────────
                 if candidate_direction == "SHORT":
                     # Ask wall close above = the rejection ceiling we're fading
@@ -1175,22 +1178,22 @@ class SignalEngine:
 
             if candidate_direction == "LONG":
                 if _sustained_buy:
-                    _tf_pts = 8.0 if _wick_fade_mode else 6.0
+                    _tf_pts = 8.0
                 elif _burst_buy:
-                    _tf_pts = 4.0 if _wick_fade_mode else 3.0
+                    _tf_pts = 4.0
                 elif _sustained_sell:
-                    _tf_pts = -8.0 if _wick_fade_mode else -6.0
+                    _tf_pts = -8.0
                 elif _burst_sell:
-                    _tf_pts = -4.0 if _wick_fade_mode else -3.0
+                    _tf_pts = -4.0
             else:  # SHORT
                 if _sustained_sell:
-                    _tf_pts = 8.0 if _wick_fade_mode else 6.0
+                    _tf_pts = 8.0
                 elif _burst_sell:
-                    _tf_pts = 4.0 if _wick_fade_mode else 3.0
+                    _tf_pts = 4.0
                 elif _sustained_buy:
-                    _tf_pts = -8.0 if _wick_fade_mode else -6.0
+                    _tf_pts = -8.0
                 elif _burst_buy:
-                    _tf_pts = -4.0 if _wick_fade_mode else -3.0
+                    _tf_pts = -4.0
 
             if _tf_pts != 0.0:
                 score += _tf_pts
@@ -1227,28 +1230,28 @@ class SignalEngine:
         #                                       wick fades are worse (can't fade a spike)
         #   NEUTRAL               = no edge  → market character unclear; no adjustment
         if _regime == "TRENDING":
-            if not _wick_fade_mode:
+            if not _counter_trend:
                 score += 10.0
                 _breakdown.append("regime=TRENDING/trend(+10)")
             else:
-                score -= 12.0
-                _breakdown.append("regime=TRENDING/fade(-12)")
+                score -= 8.0
+                _breakdown.append("regime=TRENDING/counter(-8)")
         elif _regime == "RANGING":
-            if not _wick_fade_mode:
+            if not _counter_trend:
                 score -= 12.0
                 _breakdown.append("regime=RANGING/trend(-12)")
             else:
-                score += 8.0
-                _breakdown.append("regime=RANGING/fade(+8)")
+                score += 10.0
+                _breakdown.append("regime=RANGING/counter(+10)")
         elif _regime == "HIGH_VOL":
-            if not _wick_fade_mode:
+            if not _counter_trend:
                 score -= 5.0
                 _regime_modifier = 0.75
                 _breakdown.append("regime=HIGH_VOL/trend(-5/0.75x)")
             else:
-                score -= 15.0
+                score -= 10.0
                 _regime_modifier = 0.5
-                _breakdown.append("regime=HIGH_VOL/fade(-15/0.5x)")
+                _breakdown.append("regime=HIGH_VOL/counter(-10/0.5x)")
         else:
             _breakdown.append(f"regime={_regime}(+0)")
 
@@ -1261,8 +1264,8 @@ class SignalEngine:
         logger.info(f"Score breakdown [{candidate_direction}]: {' | '.join(_breakdown)} → raw={score:.1f}%")
 
         # ─── Step 10: Determine strength ─────────────────────────────────
-        _fire_threshold = 70.0 if _wick_fade_mode else 80.0
-        _strong_threshold = 85.0 if _wick_fade_mode else 90.0
+        _fire_threshold   = 80.0
+        _strong_threshold = 90.0
         if score >= _strong_threshold:
             signal.strength = "STRONG"
         else:
@@ -1270,14 +1273,13 @@ class SignalEngine:
 
         # ─── Step 10.5: Minimum confidence gate ──────────────────────────
         if score < _fire_threshold:
-            _mode_label = "wick fade" if _wick_fade_mode else "HA trend"
+            _mode_label = "counter-trend" if _counter_trend else "trend-following"
             signal.block_reasons.append(
                 f"Confidence {score:.0f}% below {_fire_threshold:.0f}% threshold ({_mode_label}) — no trade"
             )
             logger.info(
                 f"[{candidate_direction}] BLOCKED — confidence {score:.0f}% < {_fire_threshold:.0f}% "
-                f"({'wick fade' if _wick_fade_mode else 'HA trend'}) | "
-                f"MII={mii:+.2f} | breakdown: {' '.join(_breakdown[-4:])}"
+                f"({_mode_label}) | MII={mii:+.2f} | breakdown: {' '.join(_breakdown[-4:])}"
             )
             signal.direction = candidate_direction
             signal.strength = "BLOCKED"
