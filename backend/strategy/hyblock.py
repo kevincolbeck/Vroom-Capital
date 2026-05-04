@@ -766,21 +766,20 @@ class HyblockMonitor:
 
         if cascade == "CRITICAL":
             if _casc_opposed:
-                # CRITICAL cascade moving AGAINST us — highest danger, hard block
+                # CRITICAL cascade moving AGAINST us — entering into a liquidation wave = hard block
                 should_block = True
                 warnings.append(
                     f"CRITICAL cascade risk AGAINST {direction} "
                     f"(bias={_cum_bias} casc_dir={_lv_casc_dir}) — blocked"
                 )
             elif _casc_aligned:
-                # CRITICAL cascade primed FOR our direction — this is the ideal setup,
-                # but extreme volatility means slippage/wick risk is high
-                score -= 5.0
-                warnings.append(
-                    f"CRITICAL cascade aligned with {direction} — prime setup but extreme volatility (-5)"
+                # CRITICAL cascade primed FOR our direction — this IS the trade, strongest confirmation
+                score += 8.0
+                notes.append(
+                    f"CRITICAL cascade aligned with {direction} — forced liquidation wave incoming (+8)"
                 )
             else:
-                # CRITICAL risk, direction unclear — chaos without edge
+                # CRITICAL risk, direction unclear — extreme volatility without edge
                 score -= 12.0
                 warnings.append("CRITICAL cascade risk — direction unclear, extreme uncertainty (-12)")
         elif cascade == "HIGH":
@@ -792,13 +791,13 @@ class HyblockMonitor:
                     f"(bias={_cum_bias} casc_dir={_lv_casc_dir}) — blocked"
                 )
             elif _casc_aligned:
-                # Cascade primed for our direction — this IS our setup, just volatile
-                score -= 3.0
-                warnings.append(
-                    f"HIGH cascade aligned with {direction} — directionally sound but volatile (-3)"
+                # HIGH cascade in our direction — significant forced liquidation building
+                score += 5.0
+                notes.append(
+                    f"HIGH cascade aligned with {direction} — significant liquidation pressure (+5)"
                 )
             else:
-                # Direction unclear — execution risk without edge
+                # Direction unclear — elevated volatility without edge
                 score -= 8.0
                 warnings.append("HIGH cascade risk — direction unclear, elevated uncertainty (-8)")
         elif cascade == "MEDIUM":
