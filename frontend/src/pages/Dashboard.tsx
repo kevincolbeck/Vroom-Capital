@@ -743,14 +743,16 @@ export default function Dashboard() {
                   </div>
                 )}
                 {/* Liq Level Cascade */}
-                {hyblockData.liq_levels?.cascade_direction && (
+                {hyblockData.liq_levels && (hyblockData.liq_levels.cascade_direction || hyblockData.liq_levels.long_cluster_pct != null || hyblockData.liq_levels.short_cluster_pct != null) && (
                   <div className="border-t border-dark-700 pt-2 space-y-1.5">
                     <div className="flex justify-between items-center">
                       <span className="text-gray-500 font-medium">Liq Cascade</span>
                       <span className={clsx('font-mono font-semibold text-xs',
-                        hyblockData.liq_levels.cascade_direction === 'LONG' ? 'text-profit' : 'text-loss'
+                        hyblockData.liq_levels.cascade_direction === 'LONG' ? 'text-profit' :
+                        hyblockData.liq_levels.cascade_direction === 'SHORT' ? 'text-loss' : 'text-gray-500'
                       )}>
-                        {hyblockData.liq_levels.cascade_direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}
+                        {hyblockData.liq_levels.cascade_direction === 'LONG' ? '▲ LONG' :
+                         hyblockData.liq_levels.cascade_direction === 'SHORT' ? '▼ SHORT' : '— none'}
                       </span>
                     </div>
                     {hyblockData.liq_levels.long_cluster_pct != null && (
