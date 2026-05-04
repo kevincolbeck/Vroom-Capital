@@ -704,6 +704,19 @@ class SignalEngine:
                 signal.liq_target_price = _lvl_price
                 _hm_note = f" heatmap={_hm_size:.0f}BTC@{_hm_pct}%" if _hm_pct is not None else ""
                 _tp_note = f" TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else ""
+                # Opposing cluster check: large LONG cluster very close below = stop-cascade risk
+                _opp_pct  = _liq_levels.get("long_cluster_pct")
+                _opp_size = _liq_levels.get("long_cluster_size", 0.0) or 0.0
+                if _opp_pct is not None and _opp_pct <= 0.5 and _opp_size >= _min_btc:
+                    signal.block_reasons.append(
+                        f"Liq cluster gate: LONG cluster {_opp_pct:.2f}% below entry ({_opp_size:.0f}BTC) "
+                        f"— stop-cascade risk too close"
+                    )
+                    logger.info(f"[LONG] BLOCKED — opposing LONG cluster {_opp_pct:.2f}%/{_opp_size:.0f}BTC below entry")
+                    signal.direction = candidate_direction
+                    signal.strength = "BLOCKED"
+                    signal.block_stage = "LIQ_GATE"
+                    return signal
                 logger.info(f"[LONG] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note}{_tp_note}")
 
             elif candidate_direction == "SHORT":
@@ -728,6 +741,19 @@ class SignalEngine:
                 signal.liq_target_price = _lvl_price
                 _hm_note = f" heatmap={_hm_size:.0f}BTC@{_hm_pct}%" if _hm_pct is not None else ""
                 _tp_note = f" TP=${signal.liq_target_price:,.0f}" if signal.liq_target_price else ""
+                # Opposing cluster check: large SHORT cluster very close above = stop-squeeze risk
+                _opp_pct  = _liq_levels.get("short_cluster_pct")
+                _opp_size = _liq_levels.get("short_cluster_size", 0.0) or 0.0
+                if _opp_pct is not None and _opp_pct <= 0.5 and _opp_size >= _min_btc:
+                    signal.block_reasons.append(
+                        f"Liq cluster gate: SHORT cluster {_opp_pct:.2f}% above entry ({_opp_size:.0f}BTC) "
+                        f"— stop-squeeze risk too close"
+                    )
+                    logger.info(f"[SHORT] BLOCKED — opposing SHORT cluster {_opp_pct:.2f}%/{_opp_size:.0f}BTC above entry")
+                    signal.direction = candidate_direction
+                    signal.strength = "BLOCKED"
+                    signal.block_stage = "LIQ_GATE"
+                    return signal
                 logger.info(f"[SHORT] Liq gate passed: levels={_lvl_size:.0f}BTC@{_lvl_pct}%{_hm_note}{_tp_note}")
 
         # ─── Step 8.95: 6h HA price level gate (skipped for wick fades) ─────

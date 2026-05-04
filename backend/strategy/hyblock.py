@@ -765,8 +765,24 @@ class HyblockMonitor:
         _casc_opposed = _votes_against > _votes_for
 
         if cascade == "CRITICAL":
-            should_block = True
-            warnings.append("CRITICAL cascade risk — new entries blocked")
+            if _casc_opposed:
+                # CRITICAL cascade moving AGAINST us — highest danger, hard block
+                should_block = True
+                warnings.append(
+                    f"CRITICAL cascade risk AGAINST {direction} "
+                    f"(bias={_cum_bias} casc_dir={_lv_casc_dir}) — blocked"
+                )
+            elif _casc_aligned:
+                # CRITICAL cascade primed FOR our direction — this is the ideal setup,
+                # but extreme volatility means slippage/wick risk is high
+                score -= 5.0
+                warnings.append(
+                    f"CRITICAL cascade aligned with {direction} — prime setup but extreme volatility (-5)"
+                )
+            else:
+                # CRITICAL risk, direction unclear — chaos without edge
+                score -= 12.0
+                warnings.append("CRITICAL cascade risk — direction unclear, extreme uncertainty (-12)")
         elif cascade == "HIGH":
             if _casc_opposed:
                 # Entering into an oncoming cascade on the wrong side — liquidation risk
