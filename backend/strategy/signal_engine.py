@@ -862,8 +862,10 @@ class SignalEngine:
             (candidate_direction == "LONG"  and signal.ha_6h_color == "RED")
         )
 
-        # ── TREND CONTEXT composite (max +25, floor -20) ──────────────────────
-        # All HA/candle data collapsed into one capped composite score.
+        # ── TREND CONTEXT composite (max +10, floor -15) ──────────────────────
+        # Candle/HA data is confirmation only — capped low so microstructure drives.
+        # 6h HA: 47% accuracy (barely above random) — small additive only.
+        # 1h flip: still useful as entry timing signal.
         _tc = 0.0
 
         _6h_aligned = (
@@ -875,15 +877,15 @@ class SignalEngine:
             and signal.ha_6h_color != "NEUTRAL"
         )
         if _6h_aligned:
-            _tc += 8.0
+            _tc += 3.0
             if signal.ha_6h_body_pct >= 20.0:
-                _tc += 5.0
+                _tc += 2.0
             if _prev_matches:
-                _tc += 3.0
+                _tc += 1.0
         else:
-            _tc -= 8.0
+            _tc -= 5.0
             if signal.ha_6h_body_pct >= 20.0:
-                _tc -= 3.0
+                _tc -= 2.0
         _breakdown.append(
             f"tc_6h={'align' if _6h_aligned else 'opp'}/{signal.ha_6h_body_pct:.0f}%/{'conf' if _prev_matches else 'no'}"
         )
@@ -907,23 +909,23 @@ class SignalEngine:
         if not _last4_1h or _last4_1h[-1]["color"] != _1h_target:
             # Current candle is opposing — momentum is against us
             if _aligned_1h == 0:
-                _tc -= 8.0
-                _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}(-8)")
+                _tc -= 5.0
+                _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}(-5)")
             else:
-                _tc -= 4.0
-                _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}(-4)")
+                _tc -= 3.0
+                _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}(-3)")
         elif _1h_consec >= _n_1h and _n_1h >= 3:
             # All candles aligned = exhaustion/overextension (data: 4/4 predicts reversal)
             _tc -= 4.0
             _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/exhaust(-4)")
         elif _1h_consec == 1:
-            # Current candle just flipped — fresh direction change, optimal entry timing
-            _tc += 7.0
-            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/flip(+7)")
+            # Current candle just flipped — fresh direction change, best entry timing
+            _tc += 5.0
+            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/flip(+5)")
         else:
-            # 2–(n-1) consecutive — building momentum after the flip
-            _tc += 4.0
-            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/momentum(+4)")
+            # 2–(n-1) consecutive — building momentum
+            _tc += 2.0
+            _breakdown.append(f"tc_1h={_aligned_1h}/{_n_1h}/momentum(+2)")
 
         if ha_3m:
             _3m_align = (
@@ -935,11 +937,11 @@ class SignalEngine:
                 (candidate_direction == "SHORT" and signal.ha_3m_color == "GREEN")
             )
             if _3m_align:
-                _tc += 4.0
+                _tc += 2.0
             elif _3m_opp:
-                _tc -= 3.0
+                _tc -= 2.0
 
-            # 3m burst entry timing (small bonus inside composite)
+            # 3m burst entry timing (micro confirmation inside composite)
             _last3_3m  = ha_3m[-3:] if len(ha_3m) >= 3 else ha_3m
             _3m_color_tgt = "GREEN" if candidate_direction == "LONG" else "RED"
             _3m_aligned_cnt = sum(1 for c in _last3_3m if c["color"] == _3m_color_tgt)
@@ -948,20 +950,27 @@ class SignalEngine:
             signal.ha_3m_aligned_count = _3m_aligned_cnt
             signal.ha_3m_expanding     = _3m_expanding
             if _3m_aligned_cnt == len(_last3_3m) and _3m_expanding:
-                _tc += 3.0
-            elif _3m_aligned_cnt == len(_last3_3m):
                 _tc += 1.0
+            elif _3m_aligned_cnt == len(_last3_3m):
+                _tc += 0.0
             _breakdown.append(
                 f"tc_3m={'align' if _3m_align else ('opp' if _3m_opp else 'neut')}/"
                 f"{_3m_aligned_cnt}/{len(_last3_3m)}/{'exp' if _3m_expanding else 'flat'}"
             )
 
-        _tc = min(25.0, max(-20.0, _tc))
+        _tc = min(10.0, max(-15.0, _tc))
         score += _tc
         _breakdown.append(f"trend_ctx={_tc:+.0f}")
 
+        # ── Microstructure score tracker ──────────────────────────────────────
+        # Accumulates cascade + order book + taker flow contributions.
+        # Used for the floor gate at the end — microstructure must be net positive
+        # or the signal is blocked regardless of HA/Hyblock total.
+        _micro_pts = 0.0
+
         # ── Liq cascade level proximity + size bonus ──────────────────────────
-        # Small precision bonus — already a hard gate above, so just a tiebreaker here.
+        # Primary edge — liquidation clusters are forced mechanical exits.
+        # Tighter proximity = more imminent trigger = higher score.
         if candidate_direction == "LONG":
             _casc_pct  = signal.liq_level_short_pct  # SHORT cluster above → LONG
             _casc_size = signal.liq_level_short_size
@@ -970,26 +979,24 @@ class SignalEngine:
             _casc_size = signal.liq_level_long_size
 
         if _casc_pct is not None:
-            # Tight proximity scoring for scalp strategy — distant clusters irrelevant
-            # LONG: SHORT cluster above = short squeeze magnet; SHORT: LONG below = cascade target
-            # Closer = more imminent trigger = much higher urgency
             if _casc_pct <= 0.3:
-                _prox_pts = 8.0
+                _prox_pts = 12.0
             elif _casc_pct <= 0.5:
-                _prox_pts = 6.0
+                _prox_pts = 9.0
             elif _casc_pct <= 1.0:
-                _prox_pts = 3.0
+                _prox_pts = 5.0
             elif _casc_pct <= 1.5:
-                _prox_pts = 1.0
+                _prox_pts = 2.0
             else:
-                _prox_pts = 0.0  # >1.5% away: gate may pass but cluster offers no urgency
+                _prox_pts = 0.0
             if _casc_size > 3000:
-                _prox_pts += 3.0
+                _prox_pts += 4.0
             elif _casc_size > 1000:
-                _prox_pts += 2.0
+                _prox_pts += 3.0
             elif _casc_size > 300:
-                _prox_pts += 1.0
+                _prox_pts += 2.0
             score += _prox_pts
+            _micro_pts += _prox_pts
             _breakdown.append(f"cascade={_casc_pct:.1f}%/{_casc_size:.0f}BTC({_prox_pts:+.0f})")
         else:
             _breakdown.append("cascade=none(+0)")
@@ -997,11 +1004,13 @@ class SignalEngine:
         # ── Cascade direction alignment ────────────────────────────────────────
         if cascade_dir:
             if cascade_dir == candidate_direction:
-                score += 7.0
-                _breakdown.append(f"casc_align=YES(+7)")
+                score += 12.0
+                _micro_pts += 12.0
+                _breakdown.append(f"casc_align=YES(+12)")
             else:
-                score -= 6.0
-                _breakdown.append(f"casc_align=NO(-6)")
+                score -= 10.0
+                _micro_pts -= 10.0
+                _breakdown.append(f"casc_align=NO(-10)")
 
         # ── 24h range extreme bonus ────────────────────────────────────────────
         # Bonus when direction + OBI agree at the 24h high/low extreme.
@@ -1222,7 +1231,7 @@ class SignalEngine:
             else:
                 # ── HA_TREND order book scoring ───────────────────────────────
                 if candidate_direction == "LONG":
-                    # Bid wall behind (below entry) = floor — if wrong, price bounces
+                    # Bid wall behind (below entry) = floor support
                     if _bid_wall_sz > 0:
                         if _bid_wall_pct <= 0.5 and _bid_wall_sz >= LARGE_WALL_BTC:
                             _ob_pts += 8.0; _breakdown.append(f"ob_floor@{_bid_wall_pct:.2f}%/{_bid_wall_sz:.0f}BTC(+8)")
@@ -1237,20 +1246,20 @@ class SignalEngine:
                         _ob_pts -= 10.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-10)")
                     elif _block_sz >= MIN_WALL_BTC:
                         _ob_pts -= 5.0;  _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-5)")
-                    # OBI corroboration: raw imbalance vs Hyblock OBI agreement
+                    # OBI corroboration — boosted: best-validated signal (61% accuracy)
                     if _ob_imb > 0.35 and obi_dir == "BULLISH":
-                        _ob_pts += 6.0; _breakdown.append(f"ob_obi_corr=bull({_ob_imb:+.2f}+6)")
+                        _ob_pts += 10.0; _breakdown.append(f"ob_obi_corr=bull({_ob_imb:+.2f}+10)")
                     elif _ob_imb > 0.20 and obi_dir == "BULLISH":
-                        _ob_pts += 3.0; _breakdown.append(f"ob_obi_corr=bull({_ob_imb:+.2f}+3)")
+                        _ob_pts += 6.0;  _breakdown.append(f"ob_obi_corr=bull({_ob_imb:+.2f}+6)")
                     elif _ob_imb < -0.20 and obi_dir == "BULLISH":
-                        _ob_pts -= 6.0; _breakdown.append(f"ob_obi_div=bull/imb_neg({_ob_imb:+.2f}-6)")
+                        _ob_pts -= 8.0;  _breakdown.append(f"ob_obi_div=bull/imb_neg({_ob_imb:+.2f}-8)")
                     elif _ob_imb > 0.35 and obi_dir == "NEUTRAL":
-                        _ob_pts += 3.0; _breakdown.append(f"ob_imb=bull_raw({_ob_imb:+.2f}+3)")
+                        _ob_pts += 4.0;  _breakdown.append(f"ob_imb=bull_raw({_ob_imb:+.2f}+4)")
                     elif _ob_imb < -0.35 and obi_dir == "NEUTRAL":
-                        _ob_pts -= 3.0; _breakdown.append(f"ob_imb=bear_raw({_ob_imb:+.2f}-3)")
+                        _ob_pts -= 4.0;  _breakdown.append(f"ob_imb=bear_raw({_ob_imb:+.2f}-4)")
 
                 else:  # HA_TREND SHORT
-                    # Ask wall behind (above entry) = ceiling — if wrong, price rejects
+                    # Ask wall behind (above entry) = ceiling support
                     if _ask_wall_sz > 0:
                         if _ask_wall_pct <= 0.5 and _ask_wall_sz >= LARGE_WALL_BTC:
                             _ob_pts += 8.0; _breakdown.append(f"ob_ceil@{_ask_wall_pct:.2f}%/{_ask_wall_sz:.0f}BTC(+8)")
@@ -1265,19 +1274,20 @@ class SignalEngine:
                         _ob_pts -= 10.0; _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-10)")
                     elif _block_sz >= MIN_WALL_BTC:
                         _ob_pts -= 5.0;  _breakdown.append(f"ob_block={_block_sz:.0f}BTC(-5)")
-                    # OBI corroboration
+                    # OBI corroboration — boosted
                     if _ob_imb < -0.35 and obi_dir == "BEARISH":
-                        _ob_pts += 6.0; _breakdown.append(f"ob_obi_corr=bear({_ob_imb:+.2f}+6)")
+                        _ob_pts += 10.0; _breakdown.append(f"ob_obi_corr=bear({_ob_imb:+.2f}+10)")
                     elif _ob_imb < -0.20 and obi_dir == "BEARISH":
-                        _ob_pts += 3.0; _breakdown.append(f"ob_obi_corr=bear({_ob_imb:+.2f}+3)")
+                        _ob_pts += 6.0;  _breakdown.append(f"ob_obi_corr=bear({_ob_imb:+.2f}+6)")
                     elif _ob_imb > 0.20 and obi_dir == "BEARISH":
-                        _ob_pts -= 6.0; _breakdown.append(f"ob_obi_div=bear/imb_pos({_ob_imb:+.2f}-6)")
+                        _ob_pts -= 8.0;  _breakdown.append(f"ob_obi_div=bear/imb_pos({_ob_imb:+.2f}-8)")
                     elif _ob_imb < -0.35 and obi_dir == "NEUTRAL":
-                        _ob_pts += 3.0; _breakdown.append(f"ob_imb=bear_raw({_ob_imb:+.2f}+3)")
+                        _ob_pts += 4.0;  _breakdown.append(f"ob_imb=bear_raw({_ob_imb:+.2f}+4)")
                     elif _ob_imb > 0.35 and obi_dir == "NEUTRAL":
-                        _ob_pts -= 3.0; _breakdown.append(f"ob_imb=bull_raw({_ob_imb:+.2f}-3)")
+                        _ob_pts -= 4.0;  _breakdown.append(f"ob_imb=bull_raw({_ob_imb:+.2f}-4)")
 
             score += _ob_pts
+            _micro_pts += _ob_pts
             signal.ob_state = _ob
 
         # ── aggTrade taker flow ───────────────────────────────────────────────
@@ -1299,25 +1309,26 @@ class SignalEngine:
 
             if candidate_direction == "LONG":
                 if _sustained_buy:
-                    _tf_pts = 8.0
+                    _tf_pts = 12.0
                 elif _burst_buy:
-                    _tf_pts = 4.0
+                    _tf_pts = 6.0
                 elif _sustained_sell:
-                    _tf_pts = -8.0
+                    _tf_pts = -10.0
                 elif _burst_sell:
-                    _tf_pts = -4.0
+                    _tf_pts = -6.0
             else:  # SHORT
                 if _sustained_sell:
-                    _tf_pts = 8.0
+                    _tf_pts = 12.0
                 elif _burst_sell:
-                    _tf_pts = 4.0
+                    _tf_pts = 6.0
                 elif _sustained_buy:
-                    _tf_pts = -8.0
+                    _tf_pts = -10.0
                 elif _burst_buy:
-                    _tf_pts = -4.0
+                    _tf_pts = -6.0
 
             if _tf_pts != 0.0:
                 score += _tf_pts
+                _micro_pts += _tf_pts
                 _breakdown.append(f"aggflow={tbr_5m:.2f}/{tbr_15m:.2f}({_tf_pts:+.0f})")
             else:
                 _breakdown.append(f"aggflow={tbr_5m:.2f}/neutral(+0)")
@@ -1335,6 +1346,19 @@ class SignalEngine:
                 elif _casc_live_dir:
                     score -= 15.0
                     _breakdown.append(f"live_cascade={_casc_live_dir}/opp(-15)")
+
+        # ── Microstructure floor gate ─────────────────────────────────────────
+        # Cascade + order book + taker flow must be net positive.
+        # Prevents HA + Hyblock from carrying a trade when live market says no.
+        _breakdown.append(f"micro_floor={_micro_pts:+.0f}")
+        if _micro_pts < 0:
+            signal.block_reasons.append(
+                f"Microstructure floor: live market opposing (micro={_micro_pts:+.0f}) — no trade"
+            )
+            signal.direction  = candidate_direction
+            signal.strength   = "BLOCKED"
+            signal.block_stage = "MICRO_FLOOR"
+            return signal
 
         # ── Market regime: Efficiency Ratio + volatility ──────────────────────
         # HA_TREND and WICK_FADE have inverse relationships with regime:
