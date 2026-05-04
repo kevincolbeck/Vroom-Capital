@@ -335,6 +335,9 @@ class SignalEngine:
             # Split — default LONG; cascade direction will override after fetch
             candidate_direction = "LONG"
 
+        # Saved for zone/velocity re-check if micro votes flip direction in Step 8.75
+        _prelim_dir = candidate_direction
+
         # ── Market regime — computed once, used throughout scoring ───────────
         _regime_data     = SignalEngine._compute_regime(candles_1h)
         _regime          = _regime_data["regime"]
@@ -564,6 +567,19 @@ class SignalEngine:
                 f"HA fallback ({_green_votes}G/{_red_votes}R | MII={mii:+.2f})"
             )
 
+        # If micro votes flipped direction from HA preliminary, re-check zone cooldown
+        # for the new direction (the Step 4 check only covered the preliminary direction).
+        if candidate_direction != _prelim_dir:
+            if self.zone_tracker.is_in_cooldown(zone_key, candidate_direction):
+                remaining = self.zone_tracker.get_cooldown_remaining(zone_key, candidate_direction)
+                signal.block_reasons.append(
+                    f"Zone {zone_key} {candidate_direction} in cooldown — {remaining/60:.0f}min remaining"
+                )
+                signal.direction = candidate_direction
+                signal.strength = "BLOCKED"
+                signal.block_stage = "ZONE_COOLDOWN"
+                return signal
+
         # Store precision signal state on the trade signal
         signal.cascade_direction = cascade_dir
         signal.liq_level_long_pct   = _liq_levels.get("long_cluster_pct")
@@ -592,11 +608,13 @@ class SignalEngine:
                 and signal.ha_6h_color == "GREEN"
                 and _dist_from_24h_high_pct <= _range_prox
                 and obi_dir == "BEARISH"
+                and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
             ) or (
                 candidate_direction == "LONG"
                 and signal.ha_6h_color == "RED"
                 and _dist_from_24h_low_pct <= _range_prox
                 and obi_dir == "BULLISH"
+                and casc_risk in ("MEDIUM", "HIGH", "CRITICAL")
             )
         )
         if _wick_fade_mode:
@@ -614,16 +632,21 @@ class SignalEngine:
         signal.dist_from_24h_high_pct = _dist_from_24h_high_pct
         signal.dist_from_24h_low_pct = _dist_from_24h_low_pct
 
-        if _wick_fade_mode:
-            # Re-check zone cooldown for the overridden direction
-            if self.zone_tracker.is_in_cooldown(zone_key, candidate_direction):
-                remaining = self.zone_tracker.get_cooldown_remaining(zone_key, candidate_direction)
-                signal.block_reasons.append(
-                    f"Zone {zone_key} {candidate_direction} (wick fade) in cooldown — {remaining/60:.0f}min remaining"
-                )
+        # If direction flipped from HA preliminary, re-validate velocity for the final direction.
+        # Wick fades skip this: the big move IS the setup, not a reason to block the counter-trade.
+        if candidate_direction != _prelim_dir and not _wick_fade_mode:
+            _vel2_ok, _vel2_reason, _vel2_data = check_velocity_filter(
+                candles_1h,
+                candidate_direction,
+                threshold_pct=settings.velocity_threshold_pct,
+                window_hours=settings.velocity_window_hours,
+            )
+            if not _vel2_ok:
+                signal.velocity_data = _vel2_data
+                signal.block_reasons.append(_vel2_reason)
                 signal.direction = candidate_direction
                 signal.strength = "BLOCKED"
-                signal.block_stage = "ZONE_COOLDOWN"
+                signal.block_stage = "VELOCITY"
                 return signal
 
         # Score hyblock signals now that direction is final
@@ -1017,10 +1040,10 @@ class SignalEngine:
         #   but OBI is smoothed/aggregated; raw imbalance is instantaneous).
         #   Agreement reinforces; divergence warns that something has changed.
         #
-        # WICK_FADE: wall AT/ABOVE entry (SHORT) or AT/BELOW (LONG) is the rejection
-        #   level we are fading — it IS the wick fade confirmation in order book terms.
+        # COUNTER-TREND: wall AT/ABOVE entry (SHORT) or AT/BELOW (LONG) is the rejection
+        #   level we are fading — it IS the counter-trend confirmation in order book terms.
         #   The key divergence signal: Hyblock OBI still shows trend direction (BULLISH
-        #   for SHORT wick fade) but raw book imbalance has already flipped — this is
+        #   for counter-trend SHORT) but raw book imbalance has already flipped — this is
         #   the classic "distribution top / accumulation bottom" fingerprint.
         if self.ob_monitor is not None:
             _ob = self.ob_monitor.get_live_state(current_price, signal.liq_target_price)
@@ -1163,7 +1186,7 @@ class SignalEngine:
         # Executed futures taker volume — buyers/sellers who paid the spread to enter.
         # Unlike OBI (can be spoofed) and CVD (delayed), this is raw executed conviction.
         # 5m: current pressure; 15m: sustained vs spike context.
-        # Wick fades weight this more: flow reversing AT the extreme is the entry signal.
+        # Counter-trend entries: flow reversing AT the extreme is the key entry confirmation.
         if self.trade_flow_monitor is not None:
             _tf = self.trade_flow_monitor.get_live_state()
             signal.trade_flow_state = _tf
