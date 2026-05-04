@@ -935,6 +935,23 @@ class HyblockMonitor:
                 score += 2.0
                 notes.append("price below PW open — mild weekly bearish bias (+2)")
 
+        # ── 4H compression / volatility expansion timing ──────────────────────
+        # Tight 4H range = volatility contraction before a breakout.
+        # Compression aligned with cascade direction = market coiled for our move.
+        # Compression opposing cascade = expansion may break the other way.
+        _is_compressed = data.get("is_compressed", False)
+        if _is_compressed:
+            _comp_casc_dir = (data.get("liq_levels") or {}).get("cascade_direction")
+            if _comp_casc_dir == direction:
+                score += 4.0
+                notes.append(f"4H compressed + cascade aligned — breakout timing (+4)")
+            elif _comp_casc_dir and _comp_casc_dir != direction:
+                score -= 3.0
+                warnings.append("4H compressed + cascade opposing — expansion may break against")
+            else:
+                score += 2.0
+                notes.append("4H compressed — elevated breakout potential (+2)")
+
         description = " | ".join(notes) if notes else "No strong Hyblock signals"
         return round(score, 1), description, warnings, should_block
 
