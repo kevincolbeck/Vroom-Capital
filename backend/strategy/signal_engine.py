@@ -589,6 +589,17 @@ class SignalEngine:
         signal.volume_ratio         = hyblock_data.get("volume_ratio", 0.0) or 0.0
         signal.buy_sell_count_ratio = hyblock_data.get("buy_sell_count_ratio", 0.0) or 0.0
 
+        # Snapshot all live states here — direction is final and all async data is resolved.
+        # This ensures DB completeness for every tick regardless of which gate blocks later.
+        # Step 9 (scoring) will overwrite ob_state with the correct liq_target_price if reached.
+        if self.ob_monitor is not None:
+            signal.ob_state = self.ob_monitor.get_live_state(current_price, None)
+        if self.trade_flow_monitor is not None:
+            signal.trade_flow_state = self.trade_flow_monitor.get_live_state()
+        if self.liq_stream_monitor is not None:
+            signal.live_liq_state = self.liq_stream_monitor.get_live_state()
+        signal.funding_trajectory_data = self.funding_monitor.get_trajectory()
+
         # ─── Step 8.76: Range extreme + counter-trend detection ───────────────
         # Records whether price is at a 24h extreme with microstructure opposing
         # the 6h HA trend. No longer a hard mode switch — just sets _wick_fade_mode
